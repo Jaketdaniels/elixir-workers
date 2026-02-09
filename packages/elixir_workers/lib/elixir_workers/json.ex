@@ -76,12 +76,14 @@ defmodule ElixirWorkers.JSON do
   defp decode_string(bin, pos), do: dec_str(bin, pos, [])
 
   defp dec_str(bin, pos, acc) do
-    case :binary.at(bin, pos) do
-      ?" -> {:erlang.list_to_binary(:lists.reverse(acc)), pos + 1}
-      ?\\ ->
+    c = :erlang.band(:binary.at(bin, pos), 0xFF)
+
+    case c do
+      0x22 -> {:erlang.list_to_binary(:lists.reverse(acc)), pos + 1}
+      0x5C ->
         {char, pos} = dec_esc(bin, pos + 1)
         dec_str(bin, pos, [char | acc])
-      c -> dec_str(bin, pos + 1, [c | acc])
+      _ -> dec_str(bin, pos + 1, [c | acc])
     end
   end
 
@@ -259,22 +261,25 @@ defmodule ElixirWorkers.JSON do
       :lists.reverse(acc)
     else
       c = :binary.at(bin, pos)
+      # Mask to unsigned byte — AtomVM's binary.at may return signed values
+      # for bytes >= 128, which would be negative and break comparisons.
+      uc = :erlang.band(c, 0xFF)
 
-      case c do
-        ?" -> enc_str(bin, pos + 1, [?", ?\\ | acc])
-        ?\\ -> enc_str(bin, pos + 1, [?\\, ?\\ | acc])
-        ?\n -> enc_str(bin, pos + 1, [?n, ?\\ | acc])
-        ?\r -> enc_str(bin, pos + 1, [?r, ?\\ | acc])
-        ?\t -> enc_str(bin, pos + 1, [?t, ?\\ | acc])
-        c when c < 0x20 ->
-          hex = :erlang.integer_to_list(c, 16)
+      case uc do
+        0x22 -> enc_str(bin, pos + 1, [?", ?\\ | acc])
+        0x5C -> enc_str(bin, pos + 1, [?\\, ?\\ | acc])
+        0x0A -> enc_str(bin, pos + 1, [?n, ?\\ | acc])
+        0x0D -> enc_str(bin, pos + 1, [?r, ?\\ | acc])
+        0x09 -> enc_str(bin, pos + 1, [?t, ?\\ | acc])
+        uc when uc < 0x20 ->
+          hex = :erlang.integer_to_list(uc, 16)
           padded = case length(hex) do
             1 -> [?\\, ?u, ?0, ?0, ?0 | hex]
             2 -> [?\\, ?u, ?0, ?0 | hex]
             _ -> [?\\, ?u, ?0 | hex]
           end
           enc_str(bin, pos + 1, :lists.reverse(padded) ++ acc)
-        _ -> enc_str(bin, pos + 1, [c | acc])
+        _ -> enc_str(bin, pos + 1, [uc | acc])
       end
     end
   end

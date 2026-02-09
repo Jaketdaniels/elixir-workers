@@ -40,13 +40,16 @@ defmodule ElixirWorkers.HTML do
     if pos >= byte_size(bin) do
       :erlang.iolist_to_binary(:lists.reverse(acc))
     else
-      case :binary.at(bin, pos) do
-        ?& -> esc(bin, pos + 1, ["&amp;" | acc])
-        ?< -> esc(bin, pos + 1, ["&lt;" | acc])
-        ?> -> esc(bin, pos + 1, ["&gt;" | acc])
-        ?" -> esc(bin, pos + 1, ["&quot;" | acc])
-        ?' -> esc(bin, pos + 1, ["&#39;" | acc])
-        c -> esc(bin, pos + 1, [c | acc])
+      # Mask to unsigned byte — AtomVM's binary.at may return signed values
+      c = :erlang.band(:binary.at(bin, pos), 0xFF)
+
+      case c do
+        0x26 -> esc(bin, pos + 1, ["&amp;" | acc])
+        0x3C -> esc(bin, pos + 1, ["&lt;" | acc])
+        0x3E -> esc(bin, pos + 1, ["&gt;" | acc])
+        0x22 -> esc(bin, pos + 1, ["&quot;" | acc])
+        0x27 -> esc(bin, pos + 1, ["&#39;" | acc])
+        _ -> esc(bin, pos + 1, [c | acc])
       end
     end
   end
