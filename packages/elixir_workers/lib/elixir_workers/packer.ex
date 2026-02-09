@@ -105,6 +105,22 @@ defmodule ElixirWorkers.Packer do
 
   def parse_iff_chunks(_), do: raise("Not a valid BEAM file")
 
+  @doc """
+  Extract the set of module names imported by a BEAM binary.
+  Returns a MapSet of strings like "Elixir.Enum", "erlang", etc.
+  """
+  def imported_modules(beam_data) do
+    case :beam_lib.chunks(beam_data, [:imports]) do
+      {:ok, {_mod, [{:imports, imports}]}} ->
+        imports
+        |> Enum.map(fn {m, _f, _a} -> Atom.to_string(m) end)
+        |> MapSet.new()
+
+      _ ->
+        MapSet.new()
+    end
+  end
+
   # --- Internal ---
 
   defp parse_chunks(<<>>, acc), do: Enum.reverse(acc)

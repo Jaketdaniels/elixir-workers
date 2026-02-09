@@ -57,57 +57,49 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
     File.rm_rf!(tmp_beams)
     File.mkdir_p!(tmp_beams)
 
-    # Copy stdlib beams
+    # Collect all available beams by category
     stdlib_dir = Path.join(ew_priv, "stdlib")
-
-    stdlib_count =
-      if File.dir?(stdlib_dir) do
-        files =
-          stdlib_dir
-          |> File.ls!()
-          |> Enum.filter(&String.ends_with?(&1, ".beam"))
-
-        Enum.each(files, fn f ->
-          File.cp!(Path.join(stdlib_dir, f), Path.join(tmp_beams, f))
-        end)
-
-        length(files)
-      else
-        0
-      end
-
-    step("collecting", "stdlib (#{stdlib_count} modules)")
-
-    # Copy framework beams (elixir_workers dependency)
     ew_ebin = Path.join([build_path, "lib", "elixir_workers", "ebin"])
 
-    fw_count =
-      if File.dir?(ew_ebin) do
-        files =
-          ew_ebin
-          |> File.ls!()
-          |> Enum.filter(&String.ends_with?(&1, ".beam"))
+    stdlib_beams = list_beams(stdlib_dir)
+    fw_beams = list_beams(ew_ebin)
 
-        Enum.each(files, fn f ->
-          File.cp!(Path.join(ew_ebin, f), Path.join(tmp_beams, f))
-        end)
-
-        length(files)
-      else
-        0
-      end
-
-    step("collecting", "framework (#{fw_count} modules)")
-
-    # Copy user beams (overwrite stdlib/framework if same name)
     user_beams =
       ebin_dir
       |> File.ls!()
       |> Enum.filter(&String.ends_with?(&1, ".beam"))
 
+    # Build a lookup of all available stdlib beams: module_name -> source_path
+    stdlib_index =
+      stdlib_beams
+      |> Enum.map(fn f ->
+        mod = f |> String.replace_trailing(".beam", "")
+        {mod, Path.join(stdlib_dir, f)}
+      end)
+      |> Map.new()
+
+    # Copy framework + user beams (these are always included)
+    Enum.each(fw_beams, fn f ->
+      File.cp!(Path.join(ew_ebin, f), Path.join(tmp_beams, f))
+    end)
+
     Enum.each(user_beams, fn f ->
       File.cp!(Path.join(ebin_dir, f), Path.join(tmp_beams, f))
     end)
+
+    # Tree-shake: only include stdlib modules transitively imported by user + framework code
+    root_beams =
+      (fw_beams ++ user_beams)
+      |> Enum.map(fn f -> Path.join(tmp_beams, f) end)
+
+    needed = resolve_stdlib_deps(root_beams, stdlib_index)
+
+    Enum.each(needed, fn {_mod, src_path} ->
+      File.cp!(src_path, Path.join(tmp_beams, Path.basename(src_path)))
+    end)
+
+    step("collecting", "stdlib (#{map_size(needed)}/#{length(stdlib_beams)} modules)")
+    step("collecting", "framework (#{length(fw_beams)} modules)")
 
     # 4. Detect startup module: find the module that uses ElixirWorkers.App
     startup_beam = detect_startup_module()
@@ -211,6 +203,49 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
 
     if File.exists?(wasm_src) do
       File.cp!(wasm_src, wasm_dst)
+    end
+  end
+
+  defp list_beams(dir) do
+    if File.dir?(dir) do
+      dir |> File.ls!() |> Enum.filter(&String.ends_with?(&1, ".beam"))
+    else
+      []
+    end
+  end
+
+  # Walk imports transitively from root beams, returning only the stdlib modules needed.
+  defp resolve_stdlib_deps(root_beam_paths, stdlib_index) do
+    # Seed: extract imports from all root (user + framework) beams
+    initial_imports =
+      root_beam_paths
+      |> Enum.reduce(MapSet.new(), fn path, acc ->
+        data = File.read!(path)
+        MapSet.union(acc, ElixirWorkers.Packer.imported_modules(data))
+      end)
+
+    walk_deps(initial_imports, stdlib_index, %{})
+  end
+
+  defp walk_deps(to_check, stdlib_index, found) do
+    # Filter to stdlib modules we haven't visited yet
+    new_mods =
+      to_check
+      |> Enum.filter(fn mod -> Map.has_key?(stdlib_index, mod) and not Map.has_key?(found, mod) end)
+
+    if new_mods == [] do
+      found
+    else
+      # Add these modules and extract their transitive imports
+      {found, next_imports} =
+        Enum.reduce(new_mods, {found, MapSet.new()}, fn mod, {f, imports} ->
+          src_path = Map.fetch!(stdlib_index, mod)
+          data = File.read!(src_path)
+          mod_imports = ElixirWorkers.Packer.imported_modules(data)
+          {Map.put(f, mod, src_path), MapSet.union(imports, mod_imports)}
+        end)
+
+      walk_deps(next_imports, stdlib_index, found)
     end
   end
 

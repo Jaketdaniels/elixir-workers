@@ -228,7 +228,7 @@ fi
 
 # Optimize with wasm-opt
 if command -v wasm-opt >/dev/null 2>&1; then
-  spin "Running wasm-opt" wasm-opt -Oz --low-memory-unused --zero-filled-memory \
+  spin "Running wasm-opt" wasm-opt -Oz -c --low-memory-unused --zero-filled-memory \
     --strip-debug --strip-producers \
     -o "${WASM_OUT}.opt" "$WASM_OUT" \
     || die "wasm-opt failed"
