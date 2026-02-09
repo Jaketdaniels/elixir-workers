@@ -4,15 +4,15 @@ export PATH := /opt/homebrew/opt/erlang/bin:$(PATH)
 
 all: check-deps atomvm app
 
-setup: check-deps
-	@test -d vendor/AtomVM || git clone --depth 1 https://github.com/atomvm/AtomVM.git vendor/AtomVM
-	cd worker && npm install
-	@echo "Setup complete. Run 'make' to build, then 'make dev' to start."
+setup:
+	chmod +x scripts/setup.sh
+	./scripts/setup.sh
 
 check-deps:
-	@command -v cmake >/dev/null 2>&1 || { echo "cmake required: brew install cmake"; exit 1; }
-	@command -v elixir >/dev/null 2>&1 || { echo "elixir required: brew install elixir"; exit 1; }
-	@command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
+	@command -v cmake >/dev/null 2>&1 || { echo "Run 'make setup' first."; exit 1; }
+	@command -v elixir >/dev/null 2>&1 || { echo "Run 'make setup' first."; exit 1; }
+	@command -v python3 >/dev/null 2>&1 || { echo "Run 'make setup' first."; exit 1; }
+	@test -d vendor/AtomVM || { echo "Run 'make setup' first."; exit 1; }
 
 atomvm: vendor/AtomVM
 	chmod +x scripts/build-atomvm.sh
