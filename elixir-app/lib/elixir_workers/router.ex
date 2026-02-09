@@ -12,6 +12,7 @@ defmodule ElixirWorkers.Router do
     "cf-visitor", "cf-worker", "cf-access-jwt-assertion",
     "true-client-ip"
   ]
+  @sensitive_headers_set MapSet.new(@sensitive_headers)
 
   def handle(%{"method" => "GET", "url" => "/"} = _req) do
     %{
@@ -78,7 +79,7 @@ defmodule ElixirWorkers.Router do
 
   defp filter_sensitive_headers(hdrs) when is_map(hdrs) do
     :maps.filter(fn key, _val ->
-      String.downcase(to_string(key)) not in @sensitive_headers
+      MapSet.member?(@sensitive_headers_set, String.downcase(to_string(key))) == false
     end, hdrs)
   end
 

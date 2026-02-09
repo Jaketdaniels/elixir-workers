@@ -1,7 +1,7 @@
 import wasm from "../atomvm.wasm";
 import avm from "../app.avm";
 
-const E = new TextEncoder(), D = new TextDecoder();
+const encoder = new TextEncoder(), decoder = new TextDecoder();
 let A = null;
 const getAvm = () => (A ??= new Uint8Array(avm));
 
@@ -18,7 +18,7 @@ const env = {
 };
 
 function mkWasi(stdin, args) {
-  const sin = E.encode(stdin);
+  const sin = encoder.encode(stdin);
   let sp = 0, sout = new Uint8Array(65536), soutP = 0;
   const files = new Map(), fds = new Map();
   let nfd = 4, mem;
@@ -26,7 +26,7 @@ function mkWasi(stdin, args) {
   const v = () => new DataView(mem.buffer);
   const b = () => new Uint8Array(mem.buffer);
   const resolvePath = (pp, pl) => {
-    let p = D.decode(b().subarray(pp, pp + pl));
+    let p = decoder.decode(b().subarray(pp, pp + pl));
     if (p[0] === "." && p[1] === "/") p = p.substring(2);
     else if (p[0] === "/") p = p.substring(1);
     return p;
@@ -35,13 +35,13 @@ function mkWasi(stdin, args) {
   return {
     setMem(m) { mem = m; },
     addFile(p, d) { files.set(p, d); },
-    stdout() { return D.decode(sout.subarray(0, soutP)); },
+    stdout() { return decoder.decode(sout.subarray(0, soutP)); },
     imports: {
       args_get(ap, bp) {
         const dv = v(), buf = b();
         for (const a of args) {
           dv.setUint32(ap, bp, true); ap += 4;
-          const e = E.encode(a + "\0");
+          const e = encoder.encode(a + "\0");
           buf.set(e, bp); bp += e.length;
         }
         return 0;
@@ -150,7 +150,7 @@ export default {
         const cl = request.headers.get("content-length");
         if (cl && parseInt(cl, 10) > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
         body = await request.text();
-        if (E.encode(body).length > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+        if (encoder.encode(body).length > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
       }
       const json = JSON.stringify({ method: request.method, url: url.pathname + url.search, headers: h, body });
 
