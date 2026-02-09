@@ -6,7 +6,7 @@ Run Elixir on Cloudflare Workers via AtomVM compiled to WebAssembly (WASI).
 
 Three layers:
 1. **atomvm-wasi/** — C platform adapter implementing AtomVM's `sys.h` for WASI targets
-2. **worker/** — TypeScript CF Worker that bridges HTTP ↔ stdin/stdout JSON protocol
+2. **worker/** — Vanilla JS CF Worker that bridges HTTP ↔ stdin/stdout JSON protocol
 3. **elixir-app/** — Elixir application code compiled to .beam, packaged as .avm
 
 Request flow: `HTTP → JS shim → stdin (JSON) → AtomVM WASI → Elixir app → stdout (JSON) → HTTP Response`
@@ -28,7 +28,7 @@ make deploy   # Deploy to Cloudflare
 - **Elixir** 1.17+ / **Erlang/OTP** 26+ — for compiling .beam files
 - **CMake** 3.20+ — for building the C code
 - **Python 3** — for the AVM packer
-- **wrangler** 3+ — for CF Workers dev/deploy (installed in worker/node_modules)
+- **wrangler** 4+ — for CF Workers dev/deploy (installed in worker/node_modules)
 - Erlang must be on PATH: `export PATH="/opt/homebrew/opt/erlang/bin:$PATH"` (Makefile handles this)
 
 ### Build outputs
@@ -51,8 +51,7 @@ make deploy   # Deploy to Cloudflare
 | `atomvm-wasi/include/wasi_compat.h` | Stubs for WASI-missing functions (tzset, etc.) |
 | `atomvm-wasi/include/avm_version.h` | Generated version header for WASI build |
 | `atomvm-wasi/CMakeLists.txt` | Build config — defines, excludes, wasi-sdk toolchain |
-| `worker/src/index.ts` | CF Worker: WASI runtime + HTTP↔JSON bridge (~580 lines) |
-| `worker/src/declarations.d.ts` | TypeScript declarations for .wasm/.avm imports |
+| `worker/src/index.js` | CF Worker: WASI runtime + HTTP↔JSON bridge (vanilla JS) |
 | `worker/wrangler.jsonc` | Worker config with CompiledWasm/Data rules |
 | `elixir-app/lib/elixir_workers.ex` | Entry point: `start/0` reads stdin, routes, writes stdout |
 | `elixir-app/lib/elixir_workers/router.ex` | HTTP router — pattern matches method + path |
@@ -120,7 +119,7 @@ Add more from `vendor/AtomVM/libs/estdlib/src/` or `vendor/AtomVM/libs/exavmlib/
 
 ## Development rules
 
-- The `worker/src/index.ts` contains a full WASI implementation — do NOT replace it with a library. It's deliberately minimal and self-contained for CF Workers compatibility.
+- The `worker/src/index.js` contains a full WASI implementation — do NOT replace it with a library. It's deliberately minimal and self-contained for CF Workers compatibility.
 - The WASI shim includes `env` stubs for ETS/distribution functions — these are no-ops. Do not remove them.
 - When modifying C code in `atomvm-wasi/`, always compile-test with `make atomvm` before committing.
 - After modifying Elixir code, run `make app` to recompile and repack the .avm.

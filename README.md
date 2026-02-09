@@ -103,8 +103,7 @@ elixir-workers/
 │
 ├── worker/                   Cloudflare Worker
 │   ├── src/
-│   │   ├── index.ts          WASI runtime + HTTP bridge (~580 lines)
-│   │   └── declarations.d.ts Type declarations for .wasm/.avm
+│   │   └── index.js          WASI runtime + HTTP bridge (vanilla JS)
 │   ├── wrangler.jsonc        Worker configuration
 │   ├── atomvm.wasm           (built) AtomVM binary
 │   └── app.avm               (built) Elixir application archive
