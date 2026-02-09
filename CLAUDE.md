@@ -38,8 +38,7 @@ elixir-workers/
 ├── atomvm-wasi/                  # C platform adapter (dev/CI only)
 ├── vendor/AtomVM/                # VM source (for rebuilding WASM)
 ├── _build/starter/               # Generated from templates (make dev)
-├── scripts/                      # Build scripts
-└── worker/                       # Legacy dev worker dir
+└── scripts/                      # Build scripts
 ```
 
 ## User workflow
@@ -113,19 +112,19 @@ User implements `routes/0` returning `[{method, pattern, handler}]`.
 ## Build (framework development)
 
 ```bash
-make setup    # Clone AtomVM, install npm deps
-make          # Build everything: WASM + .avm
-make app      # Rebuild just the Elixir app (legacy shell-script path)
+make setup    # Clone AtomVM, install wasi-sdk, binaryen
+make          # Build everything: WASM + priv + generate starter
 make priv     # Pre-compile stdlib into packages/elixir_workers/priv/
 make dev      # Generate starter from templates + dev server on :8797
-make clean    # Remove build/ and _build/starter/
+make clean    # Remove build artifacts (preserves starter project)
+make clean-all # Remove everything including starter and vendor
 ```
 
 ### Build prerequisites (framework development only)
 
 - **wasi-sdk** v24+ at `~/.wasi-sdk/`
 - **CMake** 3.20+
-- **Python 3** — legacy AVM packer (Elixir port in packer.ex)
+- **Python 3** — build scripts
 - **Binaryen** — `wasm-opt`
 - **Elixir** 1.17+ / **Erlang/OTP** 26+
 - **wrangler** 4+
@@ -156,10 +155,8 @@ The build task (`mix elixir_workers.build`) only packs stdlib modules that are t
 | `packages/elixir_workers/lib/mix/tasks/*.ex` | Mix tasks: new, build, dev, deploy |
 | `packages/elixir_workers/priv/templates/index.js` | JS worker template (WASI runtime) |
 | `packages/elixir_workers/priv/templates/*.eex` | Project scaffold templates |
-| `worker/src/index.js` | Legacy dev worker (framework dev only) |
 | `atomvm-wasi/src/main.c` | WASI entry point — loads .avm, calls start/0 |
 | `atomvm-wasi/src/platform_nifs.c` | NIFs: read_stdin/0, write_stdout/1 |
-| `scripts/pack_avm.py` | Legacy Python AVM packer |
 
 ## NIF registration
 

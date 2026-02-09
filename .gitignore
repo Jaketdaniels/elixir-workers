@@ -1,9 +1,5 @@
 _build/
 build/
-worker/atomvm.wasm
-worker/app.avm
-worker/node_modules/
-worker/.wrangler/
 packages/*/_build/
 packages/*/deps/
 packages/elixir_workers/priv/.built

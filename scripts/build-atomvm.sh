@@ -235,10 +235,9 @@ if command -v wasm-opt >/dev/null 2>&1; then
   mv "${WASM_OUT}.opt" "$WASM_OUT"
 fi
 
-cp "$WASM_OUT" "${PROJECT_DIR}/worker/atomvm.wasm"
-FINAL_SIZE="$(ls -lh "${PROJECT_DIR}/worker/atomvm.wasm" | awk '{print $5}')"
+FINAL_SIZE="$(ls -lh "$WASM_OUT" | awk '{print $5}')"
 
-step_ok "$FINAL_SIZE → worker/atomvm.wasm"
+step_ok "$FINAL_SIZE"
 
 # ─── Done ──────────────────────────────────────────────────────────────────
 

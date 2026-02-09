@@ -1,11 +1,11 @@
-.PHONY: all atomvm app dev deploy clean setup check-deps priv
+.PHONY: all atomvm dev deploy clean setup check-deps priv
 
 export PATH := /opt/homebrew/opt/erlang/bin:$(PATH)
 
 STARTER_DIR := _build/starter
 ATOMVM_WASM := build/atomvm-wasi/atomvm.wasm
 
-all: check-deps $(ATOMVM_WASM) app
+all: check-deps $(ATOMVM_WASM) $(STARTER_DIR)
 
 setup:
 	@NONINTERACTIVE=$(NONINTERACTIVE) ./scripts/setup.sh
@@ -26,10 +26,6 @@ atomvm: $(ATOMVM_WASM)
 
 vendor/AtomVM:
 	git submodule update --init --depth 1 vendor/AtomVM
-
-app: $(STARTER_DIR)
-	@chmod +x scripts/build-app.sh
-	@./scripts/build-app.sh
 
 # Pre-compile stdlib and bundle atomvm.wasm into the framework package.
 # Uses a sentinel file so this only runs once (use 'make clean' to force rebuild).
@@ -99,9 +95,12 @@ deploy: $(STARTER_DIR)
 	cd $(STARTER_DIR) && mix elixir_workers.deploy
 
 clean:
-	rm -rf build/
-	rm -rf $(STARTER_DIR)
+	rm -rf build/atomvm-wasi
 	rm -f packages/elixir_workers/priv/.built
+	@# Clean build artifacts inside the starter project, but preserve the project itself
+	rm -rf $(STARTER_DIR)/_build
+	rm -rf $(STARTER_DIR)/deps
 
 clean-all: clean
+	rm -rf $(STARTER_DIR)
 	rm -rf vendor/AtomVM
