@@ -32,7 +32,7 @@ elixir-workers/
 │       │       ├── elixir_workers.dev.ex   # Build + wrangler dev
 │       │       └── elixir_workers.deploy.ex# Build + wrangler deploy
 │       └── priv/
-│           ├── atomvm.wasm                 # Pre-built VM (559 KB)
+│           ├── atomvm.wasm                 # Pre-built VM (~557 KB)
 │           ├── stdlib/                     # Pre-compiled .beam files
 │           └── templates/                  # JS worker, wrangler config, project scaffold
 ├── atomvm-wasi/                  # C platform adapter (dev/CI only)
@@ -134,10 +134,14 @@ make clean    # Remove build/ and _build/starter/
 
 | Artifact | Size | Description |
 |----------|------|-------------|
-| `priv/atomvm.wasm` | 559 KB | AtomVM VM compiled to WASM |
-| `priv/stdlib/*.beam` | ~111 files | AtomVM Elixir+Erlang stdlib |
+| `priv/atomvm.wasm` | ~557 KB | AtomVM VM compiled to WASM |
+| `priv/stdlib/*.beam` | ~111 files | AtomVM Elixir+Erlang stdlib (tree-shaken at build time) |
 
-These are static — only change when the VM is updated, not when user code changes.
+These are built by `make priv` and gitignored. Only change when the VM is updated, not when user code changes.
+
+### Tree-shaking
+
+The build task (`mix elixir_workers.build`) only packs stdlib modules that are transitively imported by user + framework code. It uses `:beam_lib.chunks/2` to extract the `ImpT` table from each BEAM file, then walks the dependency graph from the root modules. For a typical hello-world app, this reduces stdlib from 111 → ~47 modules (364 KB → 232 KB).
 
 ## Key files
 
@@ -146,7 +150,7 @@ These are static — only change when the VM is updated, not when user code chan
 | `packages/elixir_workers/lib/elixir_workers.ex` | Public API: read_request/0, write_response/1 |
 | `packages/elixir_workers/lib/elixir_workers/app.ex` | `use ElixirWorkers.App` macro (generates start/0) |
 | `packages/elixir_workers/lib/elixir_workers/router.ex` | `use ElixirWorkers.Router` macro (dispatch framework) |
-| `packages/elixir_workers/lib/elixir_workers/packer.ex` | AVM archive packer (Elixir port of pack_avm.py) |
+| `packages/elixir_workers/lib/elixir_workers/packer.ex` | AVM archive packer + BEAM import extraction for tree-shaking |
 | `packages/elixir_workers/lib/elixir_workers/atomvm_wasi.ex` | `AtomVM.Wasi` module — NIF stubs matching C registration |
 | `packages/elixir_workers/lib/elixir_workers/wasi.ex` | `ElixirWorkers.Wasi` — delegates to AtomVM.Wasi |
 | `packages/elixir_workers/lib/mix/tasks/*.ex` | Mix tasks: new, build, dev, deploy |
