@@ -7,5 +7,7 @@ worker/.wrangler/
 packages/*/_build/
 packages/*/deps/
 packages/elixir_workers/priv/.built
+packages/elixir_workers/priv/atomvm.wasm
+packages/elixir_workers/priv/stdlib/
 .DS_Store
 .env
