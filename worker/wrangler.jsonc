@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "elixir-workers",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "dev": {
+    "port": 8797
+  },
+
+  // Binary modules loaded alongside the worker
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": false
+    },
+    {
+      "type": "Data",
+      "globs": ["**/*.avm"],
+      "fallthrough": false
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+/*
+ * WASI platform atoms
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+X(WASI_ATOM, "\x4", "wasi")
+X(HTTP_REQUEST_ATOM, "\xC", "http_request")
+X(HTTP_RESPONSE_ATOM, "\xD", "http_response")
