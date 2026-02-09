@@ -2,14 +2,25 @@
 
 Write Elixir, deploy to Cloudflare Workers. Cold starts under 35ms.
 
-A tiny BEAM VM ([AtomVM](https://github.com/atomvm/AtomVM)) compiled to WebAssembly lets you use pattern matching, immutable data, GenServer, Supervisor, and everything else you like about Elixir — running on Cloudflare's edge network in 300+ cities.
+Your Elixir code compiles to bytecode, gets bundled with a small virtual machine ([AtomVM](https://github.com/atomvm/AtomVM)) compiled to WebAssembly, and runs on Cloudflare's edge network in 300+ cities. Pattern matching, `Enum`, `Map`, `GenServer`, `Supervisor` — it all works.
 
 ## Why
 
-- **Just write Elixir.** 84 standard library modules are bundled. `Enum`, `Map`, `GenServer`, `Supervisor`, protocols — it all works out of the box.
+- **Just write Elixir.** 84 standard library modules are bundled. No stripped-down subset — write the same code you'd write anywhere else.
 - **Fast.** Sub-35ms cold starts. Your code runs close to your users.
-- **Small.** 240 KB gzipped total — 8% of Cloudflare's free tier limit.
-- **Simple.** One `make` command to build. One `make deploy` to ship. No Mix, no Docker, no config files to manage.
+- **Small.** 240 KB gzipped. 8% of Cloudflare's free tier.
+- **Simple.** `make app` to rebuild. `make deploy` to ship. No Mix, no Docker, no config files.
+
+## How it works
+
+Each HTTP request to your Cloudflare Worker:
+
+1. A JavaScript shim receives the request and serializes it as JSON
+2. A fresh WebAssembly VM instance starts up (~15ms)
+3. Your Elixir code reads the JSON request, pattern-matches a route, and writes a JSON response
+4. The JS shim sends the response back to the client
+
+The VM is stateless — every request starts clean. For persistence, use Cloudflare KV, D1, or R2.
 
 ## Quickstart
 
@@ -25,8 +36,8 @@ tar xf wasi-sdk-*.tar.gz && mv wasi-sdk-${V}.0-arm64-macos ~/.wasi-sdk && rm was
 # 3. Clone, build, run
 git clone https://github.com/Jaketdaniels/elixir-workers.git
 cd elixir-workers
-make setup   # clones AtomVM, installs npm deps
-make         # compiles everything
+make setup   # clones VM source, installs npm deps
+make         # compiles everything (~2 min first time)
 make dev     # http://localhost:8797
 ```
 
@@ -36,8 +47,8 @@ For x86 Mac or Linux, grab the matching wasi-sdk archive from the [releases page
 
 | Command | What it does |
 |---------|-------------|
-| `make setup` | Clone AtomVM + install npm deps (first time only) |
-| `make` | Build everything from scratch |
+| `make setup` | First-time setup (run once) |
+| `make` | Full build from scratch |
 | `make app` | Rebuild just your Elixir code (fast — use while developing) |
 | `make dev` | Start local dev server at http://localhost:8797 |
 | `make deploy` | Deploy to Cloudflare (run `npx wrangler login` first) |
@@ -45,13 +56,13 @@ For x86 Mac or Linux, grab the matching wasi-sdk archive from the [releases page
 
 ## Writing your app
 
-Your Elixir code lives in `elixir-app/lib/`. Drop `.ex` files anywhere in there — the build picks them up automatically. After editing, run `make app` to rebuild.
+Your code lives in `elixir-app/lib/`. Drop `.ex` files anywhere in there — the build picks them up automatically. After editing, run `make app` to rebuild.
 
-You need one module with a `start/0` function. That's your entry point — AtomVM calls it on every request.
+You need one module with a `start/0` function. That's your entry point — it runs on every request.
 
 ### Adding a route
 
-Open `elixir-app/lib/elixir_workers/router.ex` and add a function clause above the catch-all:
+Open `elixir-app/lib/elixir_workers/router.ex` and add a clause above the catch-all:
 
 ```elixir
 def handle(%{"method" => "GET", "url" => "/api/hello"} = _req) do
@@ -67,7 +78,7 @@ Routes are pattern-matched top-to-bottom. The last clause returns a 404.
 
 ### Request / response
 
-Your handler gets a map and returns a map:
+Your handler receives a map and returns a map:
 
 ```elixir
 # Request
