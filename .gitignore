@@ -1,20 +1,9 @@
-# Build artifacts
 build/
 worker/atomvm.wasm
 worker/app.avm
-
-# Vendored source (cloned by make setup)
-vendor/AtomVM/
-
-# Dependencies
 worker/node_modules/
-
-# Elixir build
+worker/.wrangler/
+vendor/AtomVM/
 elixir-app/_build/
 elixir-app/deps/
-
-# OS
 .DS_Store
-
-# Wrangler
-.wrangler/

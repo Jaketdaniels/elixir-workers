@@ -1,176 +1,104 @@
 # elixir-workers
 
-Run Elixir on Cloudflare Workers via AtomVM compiled to WebAssembly.
+Run Elixir on Cloudflare Workers.
+
+AtomVM (a tiny BEAM VM written in C) is compiled to WebAssembly, letting your Elixir code run inside Cloudflare's edge network. Pattern matching, immutable data, and all the good parts of Elixir — on every continent, cold starts under 35ms.
 
 ```
-HTTP Request
-     |
-     v
-┌─────────────────────────────────────────┐
-│  Cloudflare Worker (JS)                 │
-│  Serializes request to JSON on stdin    │
-├─────────────────────────────────────────┤
-│  AtomVM  (WASM/WASI)                   │
-│  Tiny BEAM VM compiled from C to WASM   │
-├─────────────────────────────────────────┤
-│  Your Elixir App  (.avm archive)        │
-│  Pattern-matched routing, JSON codec    │
-└─────────────────────────────────────────┘
-     |
-     v
-HTTP Response
+HTTP request → JS Worker → stdin (JSON) → AtomVM (WASM) → Elixir app → stdout (JSON) → HTTP response
 ```
 
-AtomVM is a lightweight BEAM virtual machine written in C. This project retargets it from its usual embedded platforms (ESP32, STM32) to WASI, allowing it to run inside Cloudflare Workers' V8 isolates as a WebAssembly module.
+## Setup
 
-Your Elixir code compiles to standard `.beam` bytecode, gets packaged into an `.avm` archive, and runs on the edge — pattern matching, immutable data, fault tolerance and all.
+### 1. Install prerequisites
 
-## Quick start
-
-### Prerequisites
-
-| Tool | Version | Install |
-|------|---------|---------|
-| wasi-sdk | v24+ | [github.com/WebAssembly/wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases) → extract to `~/.wasi-sdk/` |
-| Elixir | 1.17+ | `brew install elixir` |
-| Erlang/OTP | 26+ | installed with Elixir |
-| CMake | 3.20+ | `brew install cmake` |
-| Node.js | 18+ | `brew install node` |
-
-### Build and run
+**macOS (Homebrew):**
 
 ```bash
-git clone https://github.com/youruser/elixir-workers.git
+brew install cmake elixir node
+```
+
+You also need [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases) — the C-to-WebAssembly compiler:
+
+```bash
+# Download the latest release for your platform, then:
+export WASI_SDK_VERSION=25  # or whatever's latest
+curl -LO https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-arm64-macos.tar.gz
+tar xf wasi-sdk-*.tar.gz
+mv wasi-sdk-${WASI_SDK_VERSION}.0-arm64-macos ~/.wasi-sdk
+```
+
+For x86 Mac or Linux, grab the matching archive from the releases page.
+
+Optional (recommended) — install [binaryen](https://github.com/WebAssembly/binaryen) for smaller WASM output:
+
+```bash
+brew install binaryen  # provides wasm-opt
+```
+
+### 2. Clone and build
+
+```bash
+git clone https://github.com/Jaketdaniels/elixir-workers.git
 cd elixir-workers
-
-make setup    # Clone AtomVM, install npm deps
-make atomvm   # Compile AtomVM to WASM (~559KB optimized binary)
-make app      # Compile Elixir → .beam → .avm (~12KB archive)
-make dev      # Start dev server on localhost:8797
+make setup   # clones AtomVM source, installs npm deps
+make         # compiles AtomVM → WASM, compiles Elixir → .avm
 ```
 
-### Test it
+### 3. Run locally
 
 ```bash
-# HTML page
+make dev     # starts wrangler dev server on localhost:8797
+```
+
+Try it:
+
+```bash
 curl http://localhost:8797/
-
-# JSON health check
 curl http://localhost:8797/api/health
-# {"status":"ok","runtime":"atomvm-wasi","platform":"cloudflare-workers"}
-
-# Echo endpoint
 curl -X POST -d '{"hello":"world"}' http://localhost:8797/api/echo
-
-# 404
-curl http://localhost:8797/nope
-# {"error":"not_found","method":"GET","path":"/nope"}
 ```
 
-### Deploy to Cloudflare
+### 4. Deploy
 
 ```bash
-make deploy
+make deploy  # deploys to Cloudflare (requires wrangler login)
 ```
 
-## How it works
+## Writing your app
 
-1. **Build time**: AtomVM's C source is compiled to a `.wasm` binary using wasi-sdk. Your Elixir code is compiled to `.beam` files using standard `elixirc`, then stripped and packaged into an `.avm` archive alongside AtomVM's stdlib.
+All your Elixir code lives in `elixir-app/lib/`. The entry point is `ElixirWorkers.start/0`. After editing, run `make app` to rebuild.
 
-2. **Request time**: The JS Worker receives an HTTP request, serializes it as JSON, and pipes it to the WASM module's stdin. AtomVM boots, loads the `.avm`, finds the startup module (`ElixirWorkers`), and calls `start/0`.
+### Adding a route
 
-3. **Elixir handles it**: Your Elixir code reads the JSON request from stdin via a NIF, routes it through pattern-matched function heads, and writes a JSON response to stdout via another NIF.
-
-4. **Response**: The JS Worker captures stdout, parses the JSON, and returns a proper HTTP Response.
-
-The entire cycle runs per-request. WASM compilation is cached by the runtime between requests.
-
-## Project structure
-
-```
-elixir-workers/
-├── atomvm-wasi/              C platform adapter for AtomVM on WASI
-│   ├── src/
-│   │   ├── sys.c             Platform interface (sys.h implementation)
-│   │   ├── main.c            WASI entry point — loads .avm, runs VM
-│   │   ├── platform_nifs.c   NIFs: read_stdin, write_stdout, platform
-│   │   └── platform_defaultatoms.c
-│   ├── include/
-│   │   ├── wasi_sys.h        Platform data structures
-│   │   ├── wasi_compat.h     Stubs for missing WASI functions
-│   │   └── avm_version.h     Version header
-│   └── CMakeLists.txt        Build configuration
-│
-├── worker/                   Cloudflare Worker
-│   ├── src/
-│   │   └── index.js          WASI runtime + HTTP bridge (vanilla JS)
-│   ├── wrangler.jsonc        Worker configuration
-│   ├── atomvm.wasm           (built) AtomVM binary
-│   └── app.avm               (built) Elixir application archive
-│
-├── elixir-app/               Elixir application
-│   └── lib/
-│       ├── elixir_workers.ex           Entry point — start/0
-│       ├── elixir_workers/router.ex    HTTP router
-│       ├── elixir_workers/json.ex      JSON encoder/decoder
-│       └── atomvm/wasi.ex              NIF bindings
-│
-├── scripts/
-│   ├── build-atomvm.sh       Compiles AtomVM C → WASM
-│   ├── build-app.sh          Compiles Elixir/Erlang → .avm
-│   └── pack_avm.py           AVM archive creator
-│
-├── vendor/AtomVM/            AtomVM source (cloned by make setup)
-├── build/                    Build artifacts
-├── Makefile                  Top-level build
-└── CLAUDE.md                 AI assistant instructions
-```
-
-## Writing your application
-
-Edit the files in `elixir-app/lib/`. The entry point is `ElixirWorkers.start/0`.
-
-### Adding routes
-
-Edit `elixir-app/lib/elixir_workers/router.ex`:
+Open `elixir-app/lib/elixir_workers/router.ex` and add a function clause:
 
 ```elixir
-defmodule ElixirWorkers.Router do
-  def handle(%{"method" => "GET", "url" => "/api/hello"} = _req) do
-    %{
-      "status" => 200,
-      "headers" => %{"content-type" => "application/json"},
-      "body" => ElixirWorkers.JSON.encode(%{"hello" => "world"})
-    }
-  end
-
-  # Catch-all 404
-  def handle(%{"method" => method, "url" => url} = _req) do
-    %{
-      "status" => 404,
-      "headers" => %{"content-type" => "application/json"},
-      "body" => ElixirWorkers.JSON.encode(%{"error" => "not_found"})
-    }
-  end
+def handle(%{"method" => "GET", "url" => "/api/hello"} = _req) do
+  %{
+    "status" => 200,
+    "headers" => %{"content-type" => "application/json"},
+    "body" => ElixirWorkers.JSON.encode(%{"hello" => "world"})
+  }
 end
 ```
 
-After editing, rebuild with `make app`.
+Routes are matched top-to-bottom. The last clause returns a 404.
 
-### Request format
+### Request shape
 
-Your Elixir code receives a map with string keys:
+Your handler receives a map with string keys:
 
 ```elixir
 %{
   "method"  => "POST",
   "url"     => "/api/users?page=1",
-  "headers" => %{"content-type" => "application/json", "host" => "example.com"},
+  "headers" => %{"content-type" => "application/json"},
   "body"    => "{\"name\":\"Alice\"}"
 }
 ```
 
-### Response format
+### Response shape
 
 Return a map with `"status"`, `"headers"`, and `"body"`:
 
@@ -182,36 +110,58 @@ Return a map with `"status"`, `"headers"`, and `"body"`:
 }
 ```
 
-## Constraints
+## What works (and what doesn't)
 
-This runs on AtomVM, not full OTP. Key differences:
+This runs on AtomVM, not full OTP. It's a subset of Elixir — think of it like Elixir for microcontrollers, but targeting the edge instead.
 
-- **Single-threaded** — no processes, no `spawn`, no message passing (CF Workers are single-threaded)
-- **No OTP applications** — no supervisors, no GenServers, no application trees
-- **No networking** — no `:gen_tcp`, `:httpc`, etc. (all I/O goes through the stdin/stdout bridge)
-- **No file system** — WASI provides a virtual filesystem with only the `.avm` file
-- **Minimal stdlib** — only 5 modules bundled (maps + 4 app modules); add more from `vendor/AtomVM/libs/` as needed
-- **No string interpolation** — avoid `"hello #{name}"` syntax as it pulls in the `String.Chars` protocol. Use binary concatenation: `<<"hello ", name::binary>>`
-
-What **does** work:
-- Pattern matching (the full power of it)
+**Works great:**
+- Pattern matching, guards, multi-clause functions
 - Maps, lists, tuples, binaries
-- Recursion, guards, multi-clause functions
-- Modules, structs
-- Most `:erlang`, `:lists`, `:binary`, `:maps` functions (built-in NIFs/BIFs)
-- The `ElixirWorkers.JSON` module for encoding/decoding
+- Recursion, modules, structs
+- Most `:erlang`, `:lists`, `:binary`, `:maps` builtins
+- The included `ElixirWorkers.JSON` module
 
-## Sizes
+**Not available:**
+- Processes (`spawn`, message passing, GenServer, supervisors)
+- Networking (`:gen_tcp`, `:httpc` — use the stdin/stdout bridge instead)
+- File system access
+- String interpolation (`"hello #{name}"` — use `<<"hello ", name::binary>>` instead)
 
-| Component | Size |
-|-----------|------|
-| AtomVM WASM binary | ~559 KB |
-| Application .avm (5 modules) | ~12 KB |
-| Total Worker bundle | ~571 KB |
+## Project layout
 
-The WASM binary is built with `-Oz` + LTO + `wasm-opt -Oz` for aggressive size optimization. The .avm is aggressively pruned — most `:erlang`, `:lists`, `:binary` functions are NIFs/BIFs built into the WASM and don't need .beam files.
+```
+elixir-workers/
+├── elixir-app/lib/          ← your Elixir code goes here
+│   ├── elixir_workers.ex        entry point (start/0)
+│   ├── elixir_workers/
+│   │   ├── router.ex            HTTP routing
+│   │   └── json.ex              JSON encoder/decoder
+│   └── atomvm/wasi.ex           stdin/stdout NIFs
+├── worker/                  ← Cloudflare Worker (JS glue)
+│   ├── src/index.js             WASI runtime + HTTP bridge
+│   └── wrangler.jsonc           worker config
+├── atomvm-wasi/             ← C platform layer (AtomVM → WASI)
+│   ├── src/                     sys.c, main.c, platform_nifs.c
+│   ├── include/                 headers
+│   └── CMakeLists.txt           build config
+├── scripts/                 ← build pipeline
+│   ├── build-atomvm.sh          C → WASM compilation
+│   ├── build-app.sh             Elixir → .beam → .avm packaging
+│   └── pack_avm.py              AVM archive creator
+├── vendor/AtomVM/           ← AtomVM source (cloned by make setup)
+└── Makefile
+```
 
-For comparison, the Cloudflare Workers size limit is 10 MB (paid) / 1 MB (free). This fits comfortably in the free tier.
+## Bundle size
+
+| Component | Raw | Gzipped |
+|-----------|-----|---------|
+| AtomVM WASM | 559 KB | — |
+| Elixir app (.avm) | 12 KB | — |
+| JS worker | 7 KB | — |
+| **Total bundle** | **601 KB** | **158 KB** |
+
+Cloudflare measures the gzipped size against the limit (3 MB free / 10 MB paid). At 158 KB you're using 5% of the free tier — plenty of room to grow.
 
 ## License
 
