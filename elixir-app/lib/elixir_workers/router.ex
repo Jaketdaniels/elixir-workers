@@ -1,9 +1,4 @@
 defmodule ElixirWorkers.Router do
-  @moduledoc """
-  HTTP router for Elixir on Cloudflare Workers.
-  Pattern matches on method + path to route requests.
-  """
-
   def handle(%{"method" => "GET", "url" => "/"} = _req) do
     %{
       "status" => 200,
