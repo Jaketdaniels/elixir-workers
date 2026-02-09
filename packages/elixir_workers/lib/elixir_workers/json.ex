@@ -166,7 +166,7 @@ defmodule ElixirWorkers.JSON do
         ?. when not is_float ->
           collect_num(bin, pos + 1, [c | acc], true)
 
-        c when c in [?e, ?E] and not is_float ->
+        c when c in [?e, ?E] ->
           collect_num_exp(bin, pos + 1, [c | acc])
 
         _ ->

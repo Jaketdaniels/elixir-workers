@@ -4,66 +4,79 @@ Run Elixir on Cloudflare Workers via AtomVM compiled to WebAssembly (WASI).
 
 ## Project structure
 
-Two-package monorepo following the Phoenix model:
-
-| Package | Location | Purpose |
-|---------|----------|---------|
-| `elixir_workers` | `packages/elixir_workers/` | Hex package: framework modules + Mix tasks + pre-built artifacts |
-| `elixir_workers_new` | `packages/elixir_workers_new/` | Hex archive: project generator (`mix elixir_workers.new`) |
+Single-package architecture:
 
 ```
 elixir-workers/
 ├── packages/
-│   ├── elixir_workers/           # Framework package
-│   │   ├── lib/
-│   │   │   ├── elixir_workers.ex           # Public API (read_request, write_response)
-│   │   │   ├── elixir_workers/
-│   │   │   │   ├── app.ex                  # `use ElixirWorkers.App` macro
-│   │   │   │   ├── router.ex              # `use ElixirWorkers.Router` macro
-│   │   │   │   ├── conn.ex                # Connection map + response builders
-│   │   │   │   ├── json.ex                # JSON encoder/decoder
-│   │   │   │   ├── url.ex                 # URL parsing, path matching
-│   │   │   │   ├── body.ex                # Request body parsing
-│   │   │   │   ├── middleware.ex           # Composable middleware
-│   │   │   │   ├── kv.ex                  # CF KV access (two-pass)
-│   │   │   │   ├── d1.ex                  # CF D1 access (two-pass)
-│   │   │   │   ├── html.ex                # HTML escaping, tag helpers
-│   │   │   │   ├── wasi.ex                # NIF bridge (read_stdin/write_stdout)
-│   │   │   │   └── packer.ex              # AVM packer (ported from Python)
-│   │   │   └── mix/tasks/
-│   │   │       ├── elixir_workers.build.ex # Compile + pack .avm
-│   │   │       ├── elixir_workers.dev.ex   # Build + wrangler dev
-│   │   │       └── elixir_workers.deploy.ex# Build + wrangler deploy
-│   │   └── priv/
-│   │       ├── atomvm.wasm                 # Pre-built VM (559 KB)
-│   │       ├── stdlib/                     # Pre-compiled .beam files
-│   │       └── templates/                  # JS worker, wrangler config
-│   └── elixir_workers_new/       # Generator archive
-│       ├── lib/mix/tasks/
-│       │   └── elixir_workers.new.ex
-│       └── priv/templates/               # Project scaffold templates
+│   └── elixir_workers/             # Hex package
+│       ├── lib/
+│       │   ├── elixir_workers.ex           # Public API (read_request, write_response)
+│       │   ├── elixir_workers/
+│       │   │   ├── app.ex                  # `use ElixirWorkers.App` macro
+│       │   │   ├── router.ex              # `use ElixirWorkers.Router` macro
+│       │   │   ├── conn.ex                # Connection map + response builders
+│       │   │   ├── json.ex                # JSON encoder/decoder
+│       │   │   ├── url.ex                 # URL parsing, path matching
+│       │   │   ├── body.ex                # Request body parsing
+│       │   │   ├── middleware.ex           # Composable middleware
+│       │   │   ├── kv.ex                  # CF KV access (two-pass)
+│       │   │   ├── d1.ex                  # CF D1 access (two-pass)
+│       │   │   ├── html.ex                # HTML escaping, tag helpers
+│       │   │   ├── atomvm_wasi.ex         # NIF stubs (AtomVM.Wasi module)
+│       │   │   ├── wasi.ex                # NIF bridge (delegates to AtomVM.Wasi)
+│       │   │   └── packer.ex              # AVM packer (ported from Python)
+│       │   └── mix/tasks/
+│       │       ├── elixir_workers.new.ex  # Project generator
+│       │       ├── elixir_workers.build.ex # Compile + pack .avm
+│       │       ├── elixir_workers.dev.ex   # Build + wrangler dev
+│       │       └── elixir_workers.deploy.ex# Build + wrangler deploy
+│       └── priv/
+│           ├── atomvm.wasm                 # Pre-built VM (559 KB)
+│           ├── stdlib/                     # Pre-compiled .beam files
+│           └── templates/                  # JS worker, wrangler config, project scaffold
 ├── atomvm-wasi/                  # C platform adapter (dev/CI only)
 ├── vendor/AtomVM/                # VM source (for rebuilding WASM)
-├── elixir-app/                   # Legacy app (being replaced by packages/)
+├── _build/starter/               # Generated from templates (make dev)
 ├── scripts/                      # Build scripts
-├── examples/hello_world/         # Example project (dogfood)
-└── worker/                       # Legacy worker dir
+└── worker/                       # Legacy dev worker dir
 ```
 
-## User workflow (new projects)
+## User workflow
 
 ```bash
+mix archive.install hex elixir_workers
 mix elixir_workers.new my_app
 cd my_app && mix deps.get
 mix elixir_workers.dev          # builds .avm + starts wrangler on :8797
+mix elixir_workers.deploy       # builds + deploys to CF Workers
 ```
 
 Users only need: Elixir/Erlang + Node.js. No wasi-sdk, cmake, binaryen, or python.
 
+### Generated project structure
+
+```
+my_app/
+├── lib/
+│   ├── my_app.ex           # use ElixirWorkers.App
+│   └── my_app/router.ex    # routes & handlers
+├── mix.exs
+├── wrangler.jsonc           # CF Workers config (user edits for bindings)
+├── package.json             # wrangler npm dep
+├── node_modules/            # gitignored
+├── _build/                  # gitignored — contains worker/src/index.js, atomvm.wasm, app.avm
+├── deps/                    # gitignored
+└── .gitignore
+```
+
+`wrangler.jsonc` and `package.json` live at the project root for user access (bindings, env vars).
+Build artifacts (`index.js`, `atomvm.wasm`, `app.avm`) go in `_build/worker/` — framework internals.
+
 ## Architecture
 
 Three layers:
-1. **worker/src/index.js** — Vanilla JS Cloudflare Worker. Implements WASI. Bridges HTTP↔JSON.
+1. **priv/templates/index.js** — Vanilla JS Cloudflare Worker. Implements WASI. Bridges HTTP↔JSON. Copied to `_build/worker/` on build.
 2. **atomvm-wasi/** — C platform adapter. NIFs for stdin/stdout. Compiled to WASM via wasi-sdk.
 3. **User Elixir code** — compiled to .beam, packed into .avm with stdlib.
 
@@ -102,9 +115,10 @@ User implements `routes/0` returning `[{method, pattern, handler}]`.
 ```bash
 make setup    # Clone AtomVM, install npm deps
 make          # Build everything: WASM + .avm
-make app      # Rebuild just the Elixir app
+make app      # Rebuild just the Elixir app (legacy shell-script path)
 make priv     # Pre-compile stdlib into packages/elixir_workers/priv/
-make dev      # Dev server on :8797
+make dev      # Generate starter from templates + dev server on :8797
+make clean    # Remove build/ and _build/starter/
 ```
 
 ### Build prerequisites (framework development only)
@@ -121,7 +135,7 @@ make dev      # Dev server on :8797
 | Artifact | Size | Description |
 |----------|------|-------------|
 | `priv/atomvm.wasm` | 559 KB | AtomVM VM compiled to WASM |
-| `priv/stdlib/*.beam` | ~91 files | AtomVM Elixir+Erlang stdlib |
+| `priv/stdlib/*.beam` | ~111 files | AtomVM Elixir+Erlang stdlib |
 
 These are static — only change when the VM is updated, not when user code changes.
 
@@ -133,24 +147,27 @@ These are static — only change when the VM is updated, not when user code chan
 | `packages/elixir_workers/lib/elixir_workers/app.ex` | `use ElixirWorkers.App` macro (generates start/0) |
 | `packages/elixir_workers/lib/elixir_workers/router.ex` | `use ElixirWorkers.Router` macro (dispatch framework) |
 | `packages/elixir_workers/lib/elixir_workers/packer.ex` | AVM archive packer (Elixir port of pack_avm.py) |
-| `packages/elixir_workers/lib/mix/tasks/*.ex` | Mix tasks: build, dev, deploy |
+| `packages/elixir_workers/lib/elixir_workers/atomvm_wasi.ex` | `AtomVM.Wasi` module — NIF stubs matching C registration |
+| `packages/elixir_workers/lib/elixir_workers/wasi.ex` | `ElixirWorkers.Wasi` — delegates to AtomVM.Wasi |
+| `packages/elixir_workers/lib/mix/tasks/*.ex` | Mix tasks: new, build, dev, deploy |
 | `packages/elixir_workers/priv/templates/index.js` | JS worker template (WASI runtime) |
-| `packages/elixir_workers_new/lib/mix/tasks/elixir_workers.new.ex` | Project generator |
-| `worker/src/index.js` | CF Worker: full WASI runtime + HTTP↔JSON bridge |
-| `worker/wrangler.jsonc` | Worker config (port 8797) |
+| `packages/elixir_workers/priv/templates/*.eex` | Project scaffold templates |
+| `worker/src/index.js` | Legacy dev worker (framework dev only) |
 | `atomvm-wasi/src/main.c` | WASI entry point — loads .avm, calls start/0 |
 | `atomvm-wasi/src/platform_nifs.c` | NIFs: read_stdin/0, write_stdout/1 |
 | `scripts/pack_avm.py` | Legacy Python AVM packer |
 
 ## NIF registration
 
-| Elixir call | C function | What it does |
-|-------------|-----------|--------------|
-| `ElixirWorkers.Wasi.read_stdin()` | `nif_wasi_read_stdin` | Reads all stdin into a binary |
-| `ElixirWorkers.Wasi.write_stdout(data)` | `nif_wasi_write_stdout` | Writes binary to stdout |
-| `:atomvm.platform()` | `nif_atomvm_platform` | Returns `:wasi` atom |
+The C code in `atomvm-wasi/src/platform_nifs.c` registers NIFs under the module name `AtomVM.Wasi`:
 
-Note: The NIF is registered under `AtomVM.Wasi` in the C code. The Elixir module `ElixirWorkers.Wasi` must compile to a BEAM module named `Elixir.ElixirWorkers.Wasi` — but the NIF lookup is by atom. The legacy `AtomVM.Wasi` module name is still used for NIF registration in the C code; the `ElixirWorkers.Wasi` module delegates to the same NIF stubs.
+| C NIF name | Elixir module | Function |
+|------------|---------------|----------|
+| `Elixir.AtomVM.Wasi:read_stdin/0` | `AtomVM.Wasi` | Reads all stdin into a binary |
+| `Elixir.AtomVM.Wasi:write_stdout/1` | `AtomVM.Wasi` | Writes binary to stdout |
+| `atomvm:platform/0` | `:atomvm` | Returns `:wasi` atom |
+
+`AtomVM.Wasi` (in `atomvm_wasi.ex`) contains the NIF stubs. `ElixirWorkers.Wasi` delegates to it for use by the framework.
 
 ## AVM pack format
 
@@ -166,11 +183,11 @@ The Elixir packer (`ElixirWorkers.Packer`) reproduces the exact same binary form
 
 ## Development rules
 
-- `worker/src/index.js` is a complete WASI implementation — don't replace with a library
+- `priv/templates/index.js` is a complete WASI implementation — don't replace with a library
 - The WASI shim includes `env` stubs for ETS/distribution — no-ops, don't remove
 - The JSON module uses iolist assembly, not `Enum.intersperse` (unavailable in AtomVM)
 - No threading — `AVM_NO_SMP`, single-threaded only
 - No zlib in WASI build — LitT chunks must be pre-decompressed by packer
 - Port: dev server runs on **8797**
-- The NIF module name in C is `AtomVM.Wasi` — keep `ElixirWorkers.Wasi` as the Elixir wrapper
-- Framework modules live in `packages/elixir_workers/lib/`; legacy `elixir-app/` is for reference
+- The NIF module name in C is `AtomVM.Wasi` — the `AtomVM.Wasi` Elixir module must exist for NIF resolution
+- Framework modules live in `packages/elixir_workers/lib/`

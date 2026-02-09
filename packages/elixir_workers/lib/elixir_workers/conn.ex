@@ -71,11 +71,11 @@ defmodule ElixirWorkers.Conn do
   # --- Binding Helpers ---
 
   def add_need(conn, need) do
-    Map.put(conn, "_needs", conn["_needs"] ++ [need])
+    Map.put(conn, "_needs", [need | conn["_needs"]])
   end
 
   def add_effect(conn, effect) do
-    Map.put(conn, "_effects", conn["_effects"] ++ [effect])
+    Map.put(conn, "_effects", [effect | conn["_effects"]])
   end
 
   def needs_bindings?(conn) do
@@ -102,7 +102,7 @@ defmodule ElixirWorkers.Conn do
   def to_response(conn) do
     if needs_bindings?(conn) do
       %{
-        "_needs" => conn["_needs"],
+        "_needs" => :lists.reverse(conn["_needs"]),
         "_state" => conn["_state"]
       }
     else
@@ -114,7 +114,7 @@ defmodule ElixirWorkers.Conn do
 
       case conn["_effects"] do
         [] -> resp
-        effects -> Map.put(resp, "_effects", effects)
+        effects -> Map.put(resp, "_effects", :lists.reverse(effects))
       end
     end
   end

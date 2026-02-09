@@ -11,19 +11,26 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
 
   This task:
   1. Compiles your Elixir code with `mix compile`
-  2. Collects user .beam files and pre-compiled stdlib .beam files
-  3. Packs everything into `worker/app.avm`
-  4. Sets up the `worker/` directory with JS runtime, wrangler config, etc.
+  2. Collects stdlib, framework, and user .beam files
+  3. Packs everything into `_build/worker/app.avm`
+  4. Sets up the `_build/worker/` directory with JS runtime and WASM binary
+
+  Build artifacts go in `_build/worker/`. User config (`wrangler.jsonc`,
+  `package.json`) lives at the project root.
   """
 
   @impl Mix.Task
   def run(_args) do
+    started = System.monotonic_time(:millisecond)
+
     # 1. Compile user code
+    step("compiling", "Elixir code")
     Mix.Task.run("compile", ["--no-deps-check"])
 
     app = Mix.Project.config()[:app]
     build_path = Mix.Project.build_path()
-    worker_dir = Path.join(Mix.Project.app_path() |> Path.dirname() |> Path.dirname() |> Path.dirname(), "worker")
+    project_root = File.cwd!()
+    worker_dir = Path.join(project_root, "_build/worker")
 
     # Resolve the elixir_workers dependency path
     deps_path = Mix.Project.deps_path()
@@ -53,47 +60,103 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
     # Copy stdlib beams
     stdlib_dir = Path.join(ew_priv, "stdlib")
 
-    if File.dir?(stdlib_dir) do
-      stdlib_dir
+    stdlib_count =
+      if File.dir?(stdlib_dir) do
+        files =
+          stdlib_dir
+          |> File.ls!()
+          |> Enum.filter(&String.ends_with?(&1, ".beam"))
+
+        Enum.each(files, fn f ->
+          File.cp!(Path.join(stdlib_dir, f), Path.join(tmp_beams, f))
+        end)
+
+        length(files)
+      else
+        0
+      end
+
+    step("collecting", "stdlib (#{stdlib_count} modules)")
+
+    # Copy framework beams (elixir_workers dependency)
+    ew_ebin = Path.join([build_path, "lib", "elixir_workers", "ebin"])
+
+    fw_count =
+      if File.dir?(ew_ebin) do
+        files =
+          ew_ebin
+          |> File.ls!()
+          |> Enum.filter(&String.ends_with?(&1, ".beam"))
+
+        Enum.each(files, fn f ->
+          File.cp!(Path.join(ew_ebin, f), Path.join(tmp_beams, f))
+        end)
+
+        length(files)
+      else
+        0
+      end
+
+    step("collecting", "framework (#{fw_count} modules)")
+
+    # Copy user beams (overwrite stdlib/framework if same name)
+    user_beams =
+      ebin_dir
       |> File.ls!()
       |> Enum.filter(&String.ends_with?(&1, ".beam"))
-      |> Enum.each(fn f ->
-        File.cp!(Path.join(stdlib_dir, f), Path.join(tmp_beams, f))
-      end)
-    end
 
-    # Copy user beams (overwrite stdlib if same name)
-    ebin_dir
-    |> File.ls!()
-    |> Enum.filter(&String.ends_with?(&1, ".beam"))
-    |> Enum.each(fn f ->
+    Enum.each(user_beams, fn f ->
       File.cp!(Path.join(ebin_dir, f), Path.join(tmp_beams, f))
     end)
 
     # 4. Detect startup module: find the module that uses ElixirWorkers.App
-    startup_beam = detect_startup_module(ebin_dir)
+    startup_beam = detect_startup_module()
+    startup_name = String.replace_trailing(startup_beam, ".beam", "") |> String.replace_leading("Elixir.", "")
 
-    Mix.shell().info("Packing .avm archive...")
-    Mix.shell().info("  Startup module: #{startup_beam}")
+    step("packing", "app.avm (startup: #{startup_name})")
 
-    # 5. Set up worker/ directory
-    setup_worker_dir(worker_dir, ew_priv, app)
+    # 5. Set up _build/worker/ with runtime artifacts
+    setup_worker_dir(worker_dir, ew_priv)
 
-    # 6. Pack .avm
+    # 6. Ensure wrangler.jsonc + package.json exist at project root
+    ensure_root_config(project_root, ew_priv, app)
+
+    # 7. Install npm deps if needed
+    unless File.dir?(Path.join(project_root, "node_modules")) do
+      step("installing", "npm dependencies")
+      System.cmd("npm", ["install"], cd: project_root)
+    end
+
+    # 8. Pack .avm
     avm_path = Path.join(worker_dir, "app.avm")
 
     {total_size, num_modules} =
       ElixirWorkers.Packer.create_avm(avm_path, startup_beam, tmp_beams)
 
-    Mix.shell().info("Created #{avm_path} (#{total_size} bytes, #{num_modules} modules)")
-
     # Cleanup
     File.rm_rf!(tmp_beams)
+
+    elapsed = System.monotonic_time(:millisecond) - started
+    size_kb = Float.round(total_size / 1024, 1)
+
+    IO.puts("")
+    IO.puts(
+      "  #{IO.ANSI.green()}#{IO.ANSI.bright()}Built#{IO.ANSI.reset()} " <>
+        "_build/worker/app.avm " <>
+        "#{IO.ANSI.faint()}— #{num_modules} modules, #{size_kb} KB (#{elapsed}ms)#{IO.ANSI.reset()}"
+    )
   end
 
-  defp detect_startup_module(_ebin_dir) do
-    # Look through source files for `use ElixirWorkers.App`
-    lib_dir = Path.join(Mix.Project.app_path() |> Path.dirname() |> Path.dirname() |> Path.dirname(), "lib")
+  defp step(action, detail) do
+    padded = String.pad_trailing(action, 12)
+
+    IO.puts(
+      "  #{IO.ANSI.magenta()}#{padded}#{IO.ANSI.reset()} #{detail}"
+    )
+  end
+
+  defp detect_startup_module do
+    lib_dir = Path.join(File.cwd!(), "lib")
 
     startup =
       if File.dir?(lib_dir) do
@@ -103,7 +166,6 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
           content = File.read!(path)
 
           if String.contains?(content, "use ElixirWorkers.App") do
-            # Extract module name from defmodule
             case Regex.run(~r/defmodule\s+([\w.]+)/, content) do
               [_, mod] -> "Elixir.#{mod}.beam"
               _ -> nil
@@ -129,35 +191,35 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
     end)
   end
 
-  defp setup_worker_dir(worker_dir, ew_priv, app) do
+  defp setup_worker_dir(worker_dir, ew_priv) do
     File.mkdir_p!(worker_dir)
     File.mkdir_p!(Path.join(worker_dir, "src"))
 
     templates_dir = Path.join(ew_priv, "templates")
-    app_name = to_string(app) |> String.replace("_", "-")
 
-    # Copy index.js (static, no templating)
+    # Always overwrite index.js — it's a framework internal, not a user file
     index_src = Path.join(templates_dir, "index.js")
     index_dst = Path.join([worker_dir, "src", "index.js"])
 
-    unless File.exists?(index_dst) do
-      if File.exists?(index_src) do
-        File.cp!(index_src, index_dst)
-      end
+    if File.exists?(index_src) do
+      File.cp!(index_src, index_dst)
     end
 
-    # Copy atomvm.wasm
+    # Always overwrite atomvm.wasm — framework binary
     wasm_src = Path.join(ew_priv, "atomvm.wasm")
     wasm_dst = Path.join(worker_dir, "atomvm.wasm")
 
-    unless File.exists?(wasm_dst) do
-      if File.exists?(wasm_src) do
-        File.cp!(wasm_src, wasm_dst)
-      end
+    if File.exists?(wasm_src) do
+      File.cp!(wasm_src, wasm_dst)
     end
+  end
 
-    # Generate wrangler.jsonc from template
-    wrangler_dst = Path.join(worker_dir, "wrangler.jsonc")
+  defp ensure_root_config(project_root, ew_priv, app) do
+    templates_dir = Path.join(ew_priv, "templates")
+    app_name = to_string(app) |> String.replace("_", "-")
+
+    # Generate wrangler.jsonc at project root if missing
+    wrangler_dst = Path.join(project_root, "wrangler.jsonc")
 
     unless File.exists?(wrangler_dst) do
       wrangler_tmpl = Path.join(templates_dir, "wrangler.jsonc.eex")
@@ -165,11 +227,12 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
       if File.exists?(wrangler_tmpl) do
         content = EEx.eval_file(wrangler_tmpl, assigns: [app_name: app_name, port: 8797])
         File.write!(wrangler_dst, content)
+        step("generated", "wrangler.jsonc")
       end
     end
 
-    # Generate package.json from template
-    pkg_dst = Path.join(worker_dir, "package.json")
+    # Generate package.json at project root if missing
+    pkg_dst = Path.join(project_root, "package.json")
 
     unless File.exists?(pkg_dst) do
       pkg_tmpl = Path.join(templates_dir, "package.json.eex")
@@ -177,13 +240,8 @@ defmodule Mix.Tasks.ElixirWorkers.Build do
       if File.exists?(pkg_tmpl) do
         content = EEx.eval_file(pkg_tmpl, assigns: [app_name: app_name])
         File.write!(pkg_dst, content)
+        step("generated", "package.json")
       end
-    end
-
-    # Install npm deps if needed
-    unless File.dir?(Path.join(worker_dir, "node_modules")) do
-      Mix.shell().info("Installing npm dependencies in worker/...")
-      System.cmd("npm", ["install"], cd: worker_dir)
     end
   end
 end

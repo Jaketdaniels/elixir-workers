@@ -10,16 +10,19 @@ defmodule Mix.Tasks.ElixirWorkers.Dev do
       $ mix elixir_workers.dev
 
   This runs `mix elixir_workers.build` then starts `wrangler dev`
-  in the `worker/` directory.
+  from the project root (where `wrangler.jsonc` lives).
   """
 
   @impl Mix.Task
   def run(_args) do
     Mix.Task.run("elixir_workers.build")
 
-    worker_dir = Path.join(File.cwd!(), "worker")
+    project_root = File.cwd!()
 
-    Mix.shell().info("Starting wrangler dev server...")
+    IO.puts("")
+    IO.puts("  #{IO.ANSI.magenta()}#{IO.ANSI.bright()}elixir-workers#{IO.ANSI.reset()} #{IO.ANSI.faint()}dev#{IO.ANSI.reset()}")
+    IO.puts("  #{IO.ANSI.cyan()}http://localhost:8797#{IO.ANSI.reset()}")
+    IO.puts("")
 
     port = Port.open({:spawn_executable, System.find_executable("npx")}, [
       :binary,
@@ -27,7 +30,7 @@ defmodule Mix.Tasks.ElixirWorkers.Dev do
       :use_stdio,
       :stderr_to_stdout,
       args: ["wrangler", "dev"],
-      cd: worker_dir
+      cd: project_root
     ])
 
     stream_port(port)

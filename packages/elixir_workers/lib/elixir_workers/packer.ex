@@ -87,7 +87,7 @@ defmodule ElixirWorkers.Packer do
     iff_body =
       Enum.map(out_chunks, fn {name, data} ->
         chunk = name <> <<byte_size(data)::32-big>> <> data
-        pad_to_4(chunk)
+        pad_binary_to_4(chunk)
       end)
 
     # FOR1 header: total size = BEAM tag (4 bytes) + chunks
@@ -184,13 +184,6 @@ defmodule ElixirWorkers.Packer do
     case rem(n, 4) do
       0 -> n
       r -> n + (4 - r)
-    end
-  end
-
-  defp pad_to_4(bin) do
-    case rem(byte_size(bin), 4) do
-      0 -> bin
-      r -> bin <> :binary.copy(<<0>>, 4 - r)
     end
   end
 

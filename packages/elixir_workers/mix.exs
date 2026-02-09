@@ -2,7 +2,7 @@ defmodule ElixirWorkers.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/example/elixir-workers"
+  @source_url "https://github.com/Jaketdaniels/elixir-workers"
 
   def project do
     [
@@ -18,7 +18,7 @@ defmodule ElixirWorkers.MixProject do
   end
 
   def application do
-    [extra_applications: []]
+    [extra_applications: [:eex]]
   end
 
   defp deps do
@@ -36,7 +36,9 @@ defmodule ElixirWorkers.MixProject do
         "priv/templates",
         "mix.exs",
         "README.md",
-        "LICENSE"
+        "LICENSE",
+        "NOTICE",
+        "THIRD_PARTY_LICENSES"
       ]
     ]
   end

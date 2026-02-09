@@ -1,0 +1,29 @@
+This file lists the licenses of third-party software included in or
+distributed with elixir-workers.
+
+================================================================================
+
+AtomVM
+https://github.com/atomvm/AtomVM
+
+Copyright 2017-2025 Davide Bettio <davide@uninstall.it>
+SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+
+AtomVM is dual-licensed. This project exercises the Apache License 2.0 option.
+
+AtomVM source is used in the following ways:
+  - vendor/AtomVM/ contains the full AtomVM source (git submodule)
+  - atomvm-wasi/ is a WASI platform adapter that links against libAtomVM
+  - priv/atomvm.wasm is the AtomVM virtual machine compiled to WebAssembly
+  - priv/stdlib/*.beam are AtomVM standard library modules compiled to BEAM
+  - atomvm-wasi/include/nifs_hash.h is generated from AtomVM's nifs.gperf
+  - atomvm-wasi/include/bifs_hash.h is generated from AtomVM's bifs.gperf
+
+AtomVM source code is available at: https://github.com/atomvm/AtomVM
+
+The full text of the Apache License 2.0 is included in the LICENSE file
+at the root of this repository.
+
+The full text of the LGPL 2.1 is available at:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+or in vendor/AtomVM/LICENSES/LGPL-2.1-or-later.txt

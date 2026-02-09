@@ -1,262 +1,594 @@
 #!/usr/bin/env bash
+# Setup script for elixir-workers development.
+# Installs all dependencies, resolves PATH issues, and verifies the
+# full toolchain works end-to-end. Safe to re-run (idempotent).
+#
+# Handles: stale symlinks, partial installs, version conflicts,
+# network failures, missing tools, and non-tty (CI) environments.
+#
+# Usage:
+#   make setup                  # interactive
+#   make setup NONINTERACTIVE=1 # auto-yes (CI)
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
 WASI_SDK_VERSION=25
-MAX_RETRIES=3
-RETRY_DELAY=5
+SETUP_LOG="${PROJECT_DIR}/.setup.log"
+SETUP_START="$(date +%s)"
 
-# SHA256 checksums for wasi-sdk v25 archives
-declare -A WASI_SDK_SHA256=(
-    ["wasi-sdk-25.0-arm64-macos.tar.gz"]="b3aa0fbc6e8bad26a1990ec7413e4a0850112e013a2dc0e9e10e7ec0d815c71c"
-    ["wasi-sdk-25.0-x86_64-macos.tar.gz"]="8c60e4e0c510a9f8f8dbe4c46a10dba8e0efa0b1720e88d722c8fcdc7f51d06b"
-    ["wasi-sdk-25.0-x86_64-linux.tar.gz"]="4a38b2506e7d8a3797e3e7b5e5a51330f3b2b1f9e1b7c9a4f5c0e8d7f6a5b4c3"
-    ["wasi-sdk-25.0-arm64-linux.tar.gz"]="5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4"
-)
+MIN_CMAKE=3
+MIN_ELIXIR=1
+MIN_OTP=26
+MIN_NODE=18
 
-# --- Helpers ---
+TOTAL_STEPS=11
+CURRENT_STEP=0
+STEP_LABEL=""
+STEP_AUTO=false
 
-log()  { echo "  $*"; }
-step() { echo ""; echo "→ $*"; }
-ok()   { echo "  ✓ $*"; }
-fail() { echo "  ✗ $*" >&2; }
+export HOMEBREW_NO_ENV_HINTS=1
 
-confirm() {
-    local msg="$1"
-    echo ""
-    printf "  %s [Y/n] " "$msg"
-    read -r answer
-    case "$answer" in
-        [nN]*) return 1 ;;
-        *) return 0 ;;
-    esac
+# ─── Terminal ────────────────────────────────────────────────────────────────
+
+IS_TTY=false
+if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+  IS_TTY=true
+  bold="$(tput bold)"       || bold=""
+  dim="$(tput dim)"         || dim=""
+  reset="$(tput sgr0)"      || reset=""
+  red="$(tput setaf 1)"     || red=""
+  green="$(tput setaf 2)"   || green=""
+  yellow="$(tput setaf 3)"  || yellow=""
+  cyan="$(tput setaf 6)"    || cyan=""
+  magenta="$(tput setaf 5)" || magenta=""
+else
+  bold="" dim="" reset="" red="" green="" yellow="" cyan="" magenta=""
+fi
+
+CLEAR_EOL=$'\033[K'
+
+hide_cursor() {
+  if $IS_TTY && command -v tput >/dev/null 2>&1; then
+    tput civis || true
+  fi
+}
+show_cursor() {
+  if $IS_TTY && command -v tput >/dev/null 2>&1; then
+    tput cnorm || true
+  fi
+}
+
+# ─── Single-line step UI ─────────────────────────────────────────────────────
+
+# Each step occupies exactly one terminal line. Spinners, prompts, and status
+# updates replace the line in place. Only step_ok/step_fail emit a newline.
+
+step_begin() {
+  CURRENT_STEP=$(( CURRENT_STEP + 1 ))
+  STEP_LABEL="$1"
+
+  if $IS_TTY; then
+    printf " %s[%d/%d]%s %-22s %s…%s" \
+      "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+      "$STEP_LABEL" "$dim" "$reset"
+  fi
+}
+
+step_status() {
+  if $IS_TTY; then
+    printf "\r%s %s[%d/%d]%s %-22s %s%s%s" \
+      "$CLEAR_EOL" \
+      "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+      "$STEP_LABEL" "$dim" "$1" "$reset"
+  fi
+}
+
+step_ok() {
+  local detail="$1"
+  if $STEP_AUTO; then
+    detail="$detail (auto)"
+    STEP_AUTO=false
+  fi
+  if $IS_TTY; then
+    printf "\r%s %s[%d/%d]%s %-22s %s✓%s %s\n" \
+      "$CLEAR_EOL" \
+      "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+      "$STEP_LABEL" "$green" "$reset" "$detail"
+  else
+    printf " [%d/%d] %-22s ✓ %s\n" \
+      "$CURRENT_STEP" "$TOTAL_STEPS" "$STEP_LABEL" "$detail"
+  fi
+}
+
+step_fail() {
+  if $IS_TTY; then
+    printf "\r%s %s[%d/%d]%s %-22s %s✗%s %s\n" \
+      "$CLEAR_EOL" \
+      "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+      "$STEP_LABEL" "$red" "$reset" "$1" >&2
+  else
+    printf " [%d/%d] %-22s ✗ %s\n" \
+      "$CURRENT_STEP" "$TOTAL_STEPS" "$STEP_LABEL" "$1" >&2
+  fi
+}
+
+step_skip() {
+  CURRENT_STEP=$(( CURRENT_STEP + 1 ))
+}
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+die() {
+  step_fail "$1"
+  if [[ -f "$SETUP_LOG" ]]; then
+    if $IS_TTY; then printf " %s" "$dim" >&2; fi
+    tail -15 "$SETUP_LOG" | while IFS= read -r line; do
+      printf " %s\n" "$line" >&2
+    done
+    if $IS_TTY; then printf "%s" "$reset" >&2; fi
+  fi
+  printf " Log: %s\n" "$SETUP_LOG" >&2
+  exit 1
 }
 
 elapsed() {
-    local start=$1
-    local end
-    end=$(date +%s)
-    echo "$(( end - start ))s"
+  echo "$(( "$(date +%s)" - "$1" ))s"
 }
 
-retry() {
-    local desc="$1"; shift
-    local attempt=1
-    while [ $attempt -le $MAX_RETRIES ]; do
-        if "$@"; then
-            return 0
-        fi
-        if [ $attempt -lt $MAX_RETRIES ]; then
-            log "Attempt $attempt/$MAX_RETRIES failed. Retrying in ${RETRY_DELAY}s..."
-            sleep $RETRY_DELAY
-        fi
-        attempt=$(( attempt + 1 ))
-    done
-    fail "$desc failed after $MAX_RETRIES attempts"
-    return 1
+major_version() {
+  echo "$1" | sed 's/^[vV]//' | cut -d. -f1
 }
+
+confirm() {
+  local msg="$1"
+
+  if [[ "${NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+    STEP_AUTO=true
+    return 0
+  fi
+
+  if $IS_TTY; then
+    printf "\r%s %s[%d/%d]%s %-22s %s %s[Y/n]%s " \
+      "$CLEAR_EOL" \
+      "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+      "$STEP_LABEL" "$msg" "$dim" "$reset"
+  else
+    printf " %s [Y/n] " "$msg"
+  fi
+
+  read -r answer
+  if $IS_TTY; then printf "\033[A"; fi
+
+  case "$answer" in
+    [nN]*) return 1 ;;
+    *)     return 0 ;;
+  esac
+}
+
+# ─── Collected tool versions (for summary table) ─────────────────────────────
+
+declare -a TOOL_NAMES=()
+declare -a TOOL_VERSIONS=()
+
+record_tool() {
+  TOOL_NAMES+=("$1")
+  TOOL_VERSIONS+=("$2")
+}
+
+# ─── Spinner wrapper ─────────────────────────────────────────────────────────
+
+spin() {
+  local desc="$1"; shift
+  local spin_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local i=0 rc=0
+
+  echo "=== $desc ===" >>"$SETUP_LOG"
+
+  hide_cursor
+  "$@" >>"$SETUP_LOG" 2>&1 &
+  local pid=$!
+
+  if $IS_TTY; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf "\r%s %s[%d/%d]%s %-22s %s%s%s %s" \
+        "$CLEAR_EOL" \
+        "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+        "$STEP_LABEL" \
+        "$magenta" "${spin_chars:i%${#spin_chars}:1}" "$reset" "$desc"
+      i=$(( i + 1 ))
+      sleep 0.08
+    done
+  fi
+
+  wait "$pid" || rc=$?
+  show_cursor
+  return "$rc"
+}
+
+# ─── Brew install with recovery ──────────────────────────────────────────────
+
+brew_install() {
+  local formula="$1" cmd="$2"
+  local spin_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local i=0
+
+  echo "=== brew install $formula ===" >>"$SETUP_LOG"
+
+  hide_cursor
+  brew install "$formula" >>"$SETUP_LOG" 2>&1 &
+  local pid=$!
+
+  if $IS_TTY; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf "\r%s %s[%d/%d]%s %-22s %s%s%s Installing %s…" \
+        "$CLEAR_EOL" \
+        "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+        "$STEP_LABEL" \
+        "$magenta" "${spin_chars:i%${#spin_chars}:1}" "$reset" "$formula"
+      i=$(( i + 1 ))
+      sleep 0.08
+    done
+  fi
+
+  local brew_rc=0
+  wait "$pid" || brew_rc=$?
+  show_cursor
+
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  step_status "Fixing symlinks…"
+  brew link --overwrite "$formula" >>"$SETUP_LOG" 2>&1 || true
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  step_status "Reinstalling…"
+  brew reinstall "$formula" >>"$SETUP_LOG" 2>&1 || true
+  brew link --overwrite "$formula" >>"$SETUP_LOG" 2>&1 || true
+
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  die "Could not install $formula"
+}
+
+# ─── Download with retry ─────────────────────────────────────────────────────
+
+download() {
+  local url="$1" output="$2" desc="${3:-Downloading}"
+  local spin_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local i=0 attempt=1 max_attempts=3
+
+  while (( attempt <= max_attempts )); do
+    echo "=== curl $url ===" >>"$SETUP_LOG"
+    hide_cursor
+    curl -fSL -o "$output" "$url" >>"$SETUP_LOG" 2>&1 &
+    local pid=$!
+
+    if $IS_TTY; then
+      while kill -0 "$pid" 2>/dev/null; do
+        printf "\r%s %s[%d/%d]%s %-22s %s%s%s %s" \
+          "$CLEAR_EOL" \
+          "${bold}${magenta}" "$CURRENT_STEP" "$TOTAL_STEPS" "$reset" \
+          "$STEP_LABEL" \
+          "$magenta" "${spin_chars:i%${#spin_chars}:1}" "$reset" "$desc"
+        i=$(( i + 1 ))
+        sleep 0.08
+      done
+    fi
+
+    local rc=0
+    wait "$pid" || rc=$?
+    show_cursor
+
+    if [[ "$rc" -eq 0 && -s "$output" ]]; then
+      return 0
+    fi
+
+    if (( attempt < max_attempts )); then
+      step_status "Retry $attempt/$max_attempts…"
+      sleep 3
+    fi
+    attempt=$(( attempt + 1 ))
+  done
+
+  die "Failed to download $desc"
+}
+
+# ─── Cleanup ─────────────────────────────────────────────────────────────────
 
 cleanup() {
-    if [ -n "${WORK_DIR:-}" ] && [ -d "${WORK_DIR:-}" ]; then
-        rm -rf "$WORK_DIR"
-    fi
-    # Remove partial wasi-sdk install
-    if [ "${WASI_INSTALLING:-}" = "1" ] && [ -d "$HOME/.wasi-sdk" ]; then
-        rm -rf "$HOME/.wasi-sdk"
-        fail "Cleaned up partial wasi-sdk install"
-    fi
+  show_cursor
+
+  if [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR:-}" ]]; then
+    rm -rf "$WORK_DIR"
+  fi
+
+  if [[ "${WASI_INSTALLING:-}" == "1" && -d "$HOME/.wasi-sdk" ]]; then
+    rm -rf "$HOME/.wasi-sdk"
+    printf " %sCleaned up partial wasi-sdk install%s\n" "$red" "$reset" >&2
+  fi
 }
-trap cleanup EXIT
 
-echo "Setting up elixir-workers..."
+trap cleanup EXIT INT TERM HUP
 
-# --- Detect platform ---
+# ═════════════════════════════════════════════════════════════════════════════
+
+: >"$SETUP_LOG"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
-log "Platform: ${OS} ${ARCH}"
-
-# --- System dependencies ---
-
-step "Checking system dependencies"
-
-if [ "$OS" = "Darwin" ]; then
-    if ! command -v brew >/dev/null 2>&1; then
-        fail "Homebrew is required but not installed."
-        log "Install it manually from https://brew.sh and re-run make setup."
-        exit 1
-    fi
-
-    MISSING=()
-    command -v cmake    >/dev/null 2>&1 || MISSING+=(cmake)
-    command -v elixir   >/dev/null 2>&1 || MISSING+=(elixir)
-    command -v node     >/dev/null 2>&1 || MISSING+=(node)
-    command -v wasm-opt >/dev/null 2>&1 || MISSING+=(binaryen)
-
-    if [ ${#MISSING[@]} -gt 0 ]; then
-        if confirm "Install ${MISSING[*]} via Homebrew?"; then
-            local_start=$(date +%s)
-            retry "brew install" brew install "${MISSING[@]}"
-            ok "${MISSING[*]} ($(elapsed "$local_start"))"
-        else
-            fail "Missing dependencies: ${MISSING[*]}"
-            log "Install them manually and re-run make setup."
-            exit 1
-        fi
-    else
-        ok "cmake, elixir, node, binaryen"
-    fi
-
-elif [ "$OS" = "Linux" ]; then
-    MISSING=()
-    command -v cmake    >/dev/null 2>&1 || MISSING+=(cmake)
-    command -v node     >/dev/null 2>&1 || MISSING+=(nodejs npm)
-    command -v python3  >/dev/null 2>&1 || MISSING+=(python3)
-    command -v elixir   >/dev/null 2>&1 || MISSING+=(erlang elixir)
-    command -v wasm-opt >/dev/null 2>&1 || MISSING+=(binaryen)
-
-    if [ ${#MISSING[@]} -gt 0 ]; then
-        fail "Missing packages: ${MISSING[*]}"
-        log "Run this, then re-run make setup:"
-        echo ""
-        echo "    sudo apt-get update && sudo apt-get install -y ${MISSING[*]}"
-        echo ""
-        exit 1
-    else
-        ok "cmake, elixir, node, binaryen"
-    fi
-else
-    fail "Unsupported OS: $OS"
-    log "Install manually: cmake, elixir, node, binaryen, wasi-sdk"
-    exit 1
-fi
-
-# --- Verify tools actually work ---
-
-step "Verifying tools"
-VERIFIED=0
-for tool in cmake elixir node python3; do
-    if command -v "$tool" >/dev/null 2>&1; then
-        VERIFIED=$(( VERIFIED + 1 ))
-    else
-        fail "$tool not found after install"
-        exit 1
-    fi
-done
-ok "$VERIFIED/4 tools verified"
-
-# --- wasi-sdk ---
-
-step "Checking wasi-sdk"
-
-if [ -d "$HOME/.wasi-sdk" ] && [ -f "$HOME/.wasi-sdk/bin/clang" ]; then
-    ok "wasi-sdk already installed"
-else
-    # Clean up any partial previous install
-    [ -d "$HOME/.wasi-sdk" ] && rm -rf "$HOME/.wasi-sdk"
-
-    case "${OS}-${ARCH}" in
-        Darwin-arm64)  WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-arm64-macos.tar.gz" ;;
-        Darwin-x86_64) WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-macos.tar.gz" ;;
-        Linux-x86_64)  WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz" ;;
-        Linux-aarch64) WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-arm64-linux.tar.gz" ;;
-        *)
-            fail "No wasi-sdk binary for ${OS}-${ARCH}"
-            log "Install manually to ~/.wasi-sdk from:"
-            log "https://github.com/WebAssembly/wasi-sdk/releases"
-            exit 1
-            ;;
-    esac
-
-    if ! confirm "Download and install wasi-sdk v${WASI_SDK_VERSION} to ~/.wasi-sdk?"; then
-        fail "wasi-sdk is required to compile to WebAssembly"
-        log "Install manually from: https://github.com/WebAssembly/wasi-sdk/releases"
-        exit 1
-    fi
-
-    WASI_URL="https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/${WASI_ARCHIVE}"
-    WORK_DIR="$(mktemp -d)"
-    WASI_INSTALLING=1
-
-    log "Downloading ${WASI_ARCHIVE}..."
-    local_start=$(date +%s)
-    retry "wasi-sdk download" curl --progress-bar -L -o "${WORK_DIR}/${WASI_ARCHIVE}" "$WASI_URL"
-    log "Downloaded ($(elapsed "$local_start"))"
-
-    # Verify checksum
-    EXPECTED_SHA="${WASI_SDK_SHA256[$WASI_ARCHIVE]:-}"
-    if [ -n "$EXPECTED_SHA" ]; then
-        log "Verifying SHA256 checksum..."
-        if command -v shasum >/dev/null 2>&1; then
-            ACTUAL_SHA=$(shasum -a 256 "${WORK_DIR}/${WASI_ARCHIVE}" | awk '{print $1}')
-        elif command -v sha256sum >/dev/null 2>&1; then
-            ACTUAL_SHA=$(sha256sum "${WORK_DIR}/${WASI_ARCHIVE}" | awk '{print $1}')
-        else
-            log "Warning: no SHA256 tool found, skipping checksum verification"
-            ACTUAL_SHA="$EXPECTED_SHA"
-        fi
-        if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
-            fail "SHA256 checksum mismatch for ${WASI_ARCHIVE}"
-            fail "Expected: ${EXPECTED_SHA}"
-            fail "Actual:   ${ACTUAL_SHA}"
-            rm -f "${WORK_DIR}/${WASI_ARCHIVE}"
-            exit 1
-        fi
-        ok "Checksum verified"
-    else
-        log "Warning: no checksum available for ${WASI_ARCHIVE}, skipping verification"
-    fi
-
-    log "Extracting..."
-    tar xf "${WORK_DIR}/${WASI_ARCHIVE}" -C "$WORK_DIR"
-    mv "${WORK_DIR}"/wasi-sdk-* "$HOME/.wasi-sdk"
-    WASI_INSTALLING=0
-    rm -rf "$WORK_DIR"
-    unset WORK_DIR
-
-    # Verify
-    if [ -f "$HOME/.wasi-sdk/bin/clang" ]; then
-        ok "wasi-sdk v${WASI_SDK_VERSION} installed to ~/.wasi-sdk"
-    else
-        fail "wasi-sdk install failed — ~/.wasi-sdk/bin/clang not found"
-        exit 1
-    fi
-fi
-
-# --- AtomVM source (git submodule) ---
-
-step "Checking AtomVM submodule"
-
-if [ -d "${PROJECT_DIR}/vendor/AtomVM/src/libAtomVM" ]; then
-    ok "Already initialized"
-else
-    log "Initializing AtomVM submodule..."
-    local_start=$(date +%s)
-    cd "${PROJECT_DIR}"
-    retry "submodule init" git submodule update --init vendor/AtomVM
-    ok "Submodule initialized ($(elapsed "$local_start"))"
-fi
-
-# --- npm dependencies ---
-
-step "Checking npm dependencies"
-
-if [ -d "${PROJECT_DIR}/worker/node_modules/.package-lock.json" ]; then
-    ok "Already installed"
-else
-    if confirm "Install npm dependencies in worker/?"; then
-        local_start=$(date +%s)
-        cd "${PROJECT_DIR}/worker"
-        retry "npm install" npm install --silent
-        ok "Done ($(elapsed "$local_start"))"
-    else
-        fail "npm dependencies are required to run the dev server"
-        exit 1
-    fi
-fi
-
-# --- Done ---
 
 echo ""
-echo "Setup complete. Run 'make' to build, then 'make dev' to start."
+printf " %s%s    ▄█▄%s\n" "$magenta" "$bold" "$reset"
+printf " %s%s   █████%s  elixir-workers %ssetup%s\n" "$magenta" "$bold" "$reset" "$dim" "$reset"
+printf " %s%s    ███%s   %s%s %s%s\n" "$magenta" "$bold" "$reset" "$dim" "$OS" "$ARCH" "$reset"
+printf " %s%s     ▀%s\n" "$magenta" "$bold" "$reset"
+echo ""
+
+# ─── 1. Homebrew ─────────────────────────────────────────────────────────────
+
+if [[ "$OS" == "Darwin" ]]; then
+  step_begin "Homebrew"
+  command -v brew >/dev/null 2>&1 || die "Required — https://brew.sh"
+  BREW_V="$(brew --version | head -1)"
+  step_ok "$BREW_V"
+  record_tool "Homebrew" "$BREW_V"
+elif [[ "$OS" == "Linux" ]]; then
+  step_skip
+else
+  step_begin "Platform"
+  die "Unsupported OS: $OS"
+fi
+
+# ─── 2. cmake ────────────────────────────────────────────────────────────────
+
+step_begin "cmake"
+if command -v cmake >/dev/null 2>&1; then
+  CMAKE_V="$(cmake --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
+  [[ -n "$CMAKE_V" ]] || die "Found but not working"
+  [[ "$(major_version "$CMAKE_V")" -ge "$MIN_CMAKE" ]] || die "cmake $CMAKE_V, need >= $MIN_CMAKE"
+  step_ok "$CMAKE_V"
+  record_tool "cmake" "$CMAKE_V"
+elif [[ "$OS" == "Darwin" ]]; then
+  confirm "Install cmake via Homebrew?" || die "cmake is required"
+  brew_install cmake cmake
+  CMAKE_V="$(cmake --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
+  step_ok "${CMAKE_V:-installed}"
+  record_tool "cmake" "${CMAKE_V:-installed}"
+else
+  die "Required — install cmake and re-run"
+fi
+
+# ─── 3. Erlang & Elixir ─────────────────────────────────────────────────────
+
+step_begin "Erlang & Elixir"
+
+if ! command -v elixir >/dev/null 2>&1; then
+  if [[ "$OS" == "Darwin" ]]; then
+    confirm "Install elixir via Homebrew?" || die "elixir is required"
+    brew_install elixir elixir
+  else
+    die "Required — install erlang + elixir and re-run"
+  fi
+fi
+
+EXTRA_PATH=""
+for erldir in /opt/homebrew/opt/erlang/bin /usr/local/opt/erlang/bin; do
+  if [[ -x "${erldir}/erl" ]] && ! echo "$PATH" | grep -q "$erldir"; then
+    export PATH="${erldir}:${PATH}"
+    EXTRA_PATH="${erldir}"
+  fi
+done
+
+ERL_V="$(erl -eval 'io:format("~s",[erlang:system_info(otp_release)]),halt().' -noshell 2>/dev/null || true)"
+[[ -n "$ERL_V" ]] || die "erl not found in PATH — if using asdf/mise/kerl, activate it first"
+[[ "$(major_version "$ERL_V")" -ge "$MIN_OTP" ]] || die "OTP $ERL_V, need >= $MIN_OTP"
+
+ELIXIR_V="$(elixir --version 2>/dev/null | grep -oE 'Elixir [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' || true)"
+[[ -n "$ELIXIR_V" ]] || die "elixir not working"
+[[ "$(major_version "$ELIXIR_V")" -ge "$MIN_ELIXIR" ]] || die "Elixir $ELIXIR_V, need >= $MIN_ELIXIR"
+
+mix --version >/dev/null 2>&1 || die "mix is not working"
+
+step_ok "OTP $ERL_V, Elixir $ELIXIR_V"
+record_tool "Erlang/OTP" "$ERL_V"
+record_tool "Elixir" "$ELIXIR_V"
+
+# ─── 4. Node.js ─────────────────────────────────────────────────────────────
+
+step_begin "Node.js"
+
+if command -v node >/dev/null 2>&1; then
+  NODE_V="$(node --version 2>/dev/null || true)"
+  [[ -n "$NODE_V" ]] || die "Found but not working"
+  [[ "$(major_version "$NODE_V")" -ge "$MIN_NODE" ]] || die "Node.js $NODE_V, need >= $MIN_NODE"
+  step_ok "$NODE_V"
+  record_tool "Node.js" "$NODE_V"
+elif [[ "$OS" == "Darwin" ]]; then
+  confirm "Install node via Homebrew?" || die "node is required"
+  brew_install node node
+  NODE_V="$(node --version 2>/dev/null || true)"
+  step_ok "${NODE_V:-installed}"
+  record_tool "Node.js" "${NODE_V:-installed}"
+else
+  die "Required — install node and re-run"
+fi
+
+# ─── 5. Python 3 ────────────────────────────────────────────────────────────
+
+step_begin "Python 3"
+
+PYTHON_V="$(python3 --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' || true)"
+[[ -n "$PYTHON_V" ]] || die "python3 is required but not found"
+
+step_ok "$PYTHON_V"
+record_tool "Python" "$PYTHON_V"
+
+# ─── 6. Binaryen ────────────────────────────────────────────────────────────
+
+step_begin "Binaryen"
+
+if command -v wasm-opt >/dev/null 2>&1; then
+  WASMOPT_V="$(wasm-opt --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+  [[ -n "$WASMOPT_V" ]] || die "Found but not working"
+  step_ok "wasm-opt $WASMOPT_V"
+  record_tool "Binaryen" "$WASMOPT_V"
+elif [[ "$OS" == "Darwin" ]]; then
+  confirm "Install binaryen via Homebrew?" || die "binaryen is required"
+  brew_install binaryen wasm-opt
+  WASMOPT_V="$(wasm-opt --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+  step_ok "wasm-opt ${WASMOPT_V:-installed}"
+  record_tool "Binaryen" "${WASMOPT_V:-installed}"
+else
+  die "Required — install binaryen and re-run"
+fi
+
+# ─── 7. wasi-sdk ────────────────────────────────────────────────────────────
+
+step_begin "wasi-sdk"
+
+if [[ -d "$HOME/.wasi-sdk" && -x "$HOME/.wasi-sdk/bin/clang" ]]; then
+  WASI_V="$("$HOME/.wasi-sdk/bin/clang" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "unknown")"
+  step_ok "v${WASI_SDK_VERSION} (clang $WASI_V)"
+  record_tool "wasi-sdk" "v${WASI_SDK_VERSION}"
+else
+  [[ -d "$HOME/.wasi-sdk" ]] && rm -rf "$HOME/.wasi-sdk"
+
+  case "${OS}-${ARCH}" in
+    Darwin-arm64)  WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-arm64-macos.tar.gz" ;;
+    Darwin-x86_64) WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-macos.tar.gz" ;;
+    Linux-x86_64)  WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz" ;;
+    Linux-aarch64) WASI_ARCHIVE="wasi-sdk-${WASI_SDK_VERSION}.0-arm64-linux.tar.gz" ;;
+    *)             die "No wasi-sdk binary for ${OS}-${ARCH}" ;;
+  esac
+
+  confirm "Download wasi-sdk v${WASI_SDK_VERSION} (~400 MB)?" || \
+    die "Required — https://github.com/WebAssembly/wasi-sdk/releases"
+
+  WASI_URL="https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/${WASI_ARCHIVE}"
+  WORK_DIR="$(mktemp -d)"
+  WASI_INSTALLING=1
+  local_start="$(date +%s)"
+
+  download "$WASI_URL" "${WORK_DIR}/${WASI_ARCHIVE}" "Downloading wasi-sdk v${WASI_SDK_VERSION}"
+  spin "Extracting wasi-sdk" tar xf "${WORK_DIR}/${WASI_ARCHIVE}" -C "$WORK_DIR" || die "Failed to extract wasi-sdk"
+  rm -f "${WORK_DIR}/${WASI_ARCHIVE}"
+
+  mv "${WORK_DIR}"/wasi-sdk-* "$HOME/.wasi-sdk"
+  WASI_INSTALLING=0
+  rm -rf "$WORK_DIR"
+  unset WORK_DIR
+
+  if [[ -x "$HOME/.wasi-sdk/bin/clang" ]]; then
+    "$HOME/.wasi-sdk/bin/clang" --version >/dev/null 2>&1 || die "Installed but clang won't execute"
+    step_ok "v${WASI_SDK_VERSION} ($(elapsed "$local_start"))"
+    record_tool "wasi-sdk" "v${WASI_SDK_VERSION}"
+  else
+    die "Install failed — ~/.wasi-sdk/bin/clang not found"
+  fi
+fi
+
+# ─── 8. AtomVM submodule ────────────────────────────────────────────────────
+
+step_begin "AtomVM submodule"
+
+if [[ -d "${PROJECT_DIR}/vendor/AtomVM/src/libAtomVM" ]]; then
+  step_ok "already initialized"
+  record_tool "AtomVM" "submodule"
+else
+  local_start="$(date +%s)"
+  (cd "$PROJECT_DIR" && spin "Cloning AtomVM" git submodule update --init vendor/AtomVM) || die "git submodule update failed"
+  [[ -d "${PROJECT_DIR}/vendor/AtomVM/src/libAtomVM" ]] || die "Cloned but vendor/AtomVM/src/libAtomVM not found"
+  step_ok "initialized ($(elapsed "$local_start"))"
+  record_tool "AtomVM" "submodule"
+fi
+
+# ─── 9. npm (wrangler) ──────────────────────────────────────────────────────
+
+step_begin "npm (wrangler)"
+
+if command -v npx >/dev/null 2>&1; then
+  step_ok "npx available"
+  record_tool "npm" "$(npm --version 2>/dev/null || echo 'installed')"
+else
+  die "npx not found — install Node.js"
+fi
+
+# ─── 10. Permissions & config ───────────────────────────────────────────────
+
+step_begin "Permissions & config"
+
+chmod +x "${PROJECT_DIR}"/scripts/*.sh
+ENV_FILE="${PROJECT_DIR}/.env"
+ENV_PATH_LINE="export PATH=\"${EXTRA_PATH:+${EXTRA_PATH}:}\$HOME/.wasi-sdk/bin:\$PATH\""
+
+if [[ -f "$ENV_FILE" ]]; then
+  # Preserve user-added lines, update the managed PATH line
+  if grep -q 'wasi-sdk' "$ENV_FILE"; then
+    sed -i.bak '/wasi-sdk/d' "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  fi
+  # Remove old auto-generated comment if present
+  sed -i.bak '/^# Auto-generated by scripts\/setup\.sh$/d' "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  # Prepend managed lines
+  {
+    echo "# Auto-generated by scripts/setup.sh"
+    echo "$ENV_PATH_LINE"
+    cat "$ENV_FILE"
+  } > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+else
+  {
+    echo "# Auto-generated by scripts/setup.sh"
+    echo "$ENV_PATH_LINE"
+  } >"$ENV_FILE"
+fi
+
+if ! grep -qxF '.env' "${PROJECT_DIR}/.gitignore" 2>/dev/null; then
+  echo '.env' >>"${PROJECT_DIR}/.gitignore"
+fi
+
+step_ok ".env + permissions"
+
+# ─── 11. Smoke test ─────────────────────────────────────────────────────────
+
+step_begin "Smoke test"
+
+(
+  cd "${PROJECT_DIR}/packages/elixir_workers" || exit 1
+  spin "Fetching deps" mix deps.get --quiet || exit 1
+  spin "Compiling" mix compile --warnings-as-errors || exit 1
+) || die "Smoke test failed"
+
+MODULE_COUNT="$(find "${PROJECT_DIR}/packages/elixir_workers/_build" -name 'Elixir.*.beam' 2>/dev/null | wc -l | tr -d ' ')"
+[[ -f "${PROJECT_DIR}/packages/elixir_workers/_build/dev/lib/elixir_workers/ebin/Elixir.AtomVM.Wasi.beam" ]] || die "AtomVM.Wasi.beam missing"
+
+step_ok "$MODULE_COUNT modules, 0 warnings"
+record_tool "Smoke test" "${MODULE_COUNT} modules"
+
+# ═════════════════════════════════════════════════════════════════════════════
+
+TOTAL_ELAPSED="$(elapsed "$SETUP_START")"
+
+echo ""
+printf " %s%s✓ Setup complete%s %s(%s)%s\n" "$green" "$bold" "$reset" "$dim" "$TOTAL_ELAPSED" "$reset"
+echo ""
+printf " %s%-14s %s%s\n" "$dim" "Tool" "Version" "$reset"
+printf " %s%-14s %s%s\n" "$dim" "──────────────" "──────────────────────" "$reset"
+for i in "${!TOOL_NAMES[@]}"; do
+  printf " %-14s %s\n" "${TOOL_NAMES[$i]}" "${TOOL_VERSIONS[$i]}"
+done
+echo ""
+printf " %sNext steps:%s\n" "$bold" "$reset"
+echo ""
+printf " %smake%s build everything (WASM + .avm)\n" "$cyan" "$reset"
+printf " %smake dev%s start dev server on :8797\n" "$cyan" "$reset"
+echo ""
+printf " %sCan't find erl/elixir/mix? Run: source .env%s\n" "$dim" "$reset"
+echo ""
+rm -f "$SETUP_LOG"

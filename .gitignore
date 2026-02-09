@@ -1,12 +1,11 @@
+_build/
 build/
 worker/atomvm.wasm
 worker/app.avm
 worker/node_modules/
 worker/.wrangler/
-elixir-app/_build/
-elixir-app/deps/
 packages/*/_build/
 packages/*/deps/
-examples/*/_build/
-examples/*/deps/
+packages/elixir_workers/priv/.built
 .DS_Store
+.env

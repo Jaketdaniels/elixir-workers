@@ -1,4 +1,6 @@
 defmodule ElixirWorkers.Wasi do
-  def read_stdin, do: :erlang.nif_error(:nif_not_loaded)
-  def write_stdout(_data), do: :erlang.nif_error(:nif_not_loaded)
+  @moduledoc false
+
+  defdelegate read_stdin, to: AtomVM.Wasi
+  defdelegate write_stdout(data), to: AtomVM.Wasi
 end

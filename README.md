@@ -7,8 +7,8 @@ Write Elixir, deploy to Cloudflare Workers. Powered by AtomVM compiled to WebAss
 **Prerequisites:** Elixir 1.17+ / Erlang/OTP 26+ and Node.js 18+.
 
 ```bash
-# Install the project generator
-mix archive.install hex elixir_workers_new
+# Install the package (includes project generator)
+mix archive.install hex elixir_workers
 
 # Create a new project
 mix elixir_workers.new my_app
@@ -81,7 +81,7 @@ mix elixir_workers.deploy
 
 ## Bindings (KV, D1)
 
-Configure bindings in `worker/wrangler.jsonc`, then use them in your routes:
+Configure bindings in `wrangler.jsonc`, then use them in your routes:
 
 ```elixir
 # KV reads (transparent two-pass protocol)
@@ -97,7 +97,7 @@ conn = ElixirWorkers.KV.put(conn, "MY_KV", "user:1", "data")
 ## Architecture
 
 Three layers:
-1. **worker/src/index.js** — JS Cloudflare Worker with full WASI runtime
+1. **JS Worker** — Vanilla Cloudflare Worker with full WASI runtime (framework-managed in `_build/worker/`)
 2. **atomvm-wasi/** — C platform adapter compiled to WASM
 3. **Your Elixir code** — compiled to .beam, packed into .avm archive
 
@@ -105,25 +105,29 @@ Each request creates a fresh WASM instance. The 559 KB `atomvm.wasm` runtime and
 
 ## Development (contributing)
 
-To work on the framework itself (requires wasi-sdk, cmake, binaryen, python):
+To work on the framework itself (requires wasi-sdk, cmake, binaryen):
 
 ```bash
-make setup    # Clone AtomVM, install deps
-make          # Build everything
-make priv     # Pre-compile stdlib for the package
+make setup    # Install tools, clone AtomVM
+make dev      # Build WASM, compile stdlib, start dev server on :8797
 ```
 
 ## Project structure
 
 ```
 packages/
-  elixir_workers/      # Hex package: framework + Mix tasks + pre-built artifacts
-  elixir_workers_new/  # Hex archive: project generator
+  elixir_workers/      # Hex package: framework + Mix tasks + generator + pre-built artifacts
+    priv/templates/    # Starter template (single source of truth for generated projects)
 atomvm-wasi/           # C platform adapter
-vendor/AtomVM/         # AtomVM source (for rebuilding WASM + stdlib)
-examples/hello_world/  # Example project
+vendor/AtomVM/         # AtomVM source (git submodule, for rebuilding WASM + stdlib)
 ```
 
 ## License
 
 Apache-2.0
+
+This project is built on [AtomVM](https://github.com/atomvm/AtomVM), which is
+dual-licensed under Apache-2.0 OR LGPL-2.1-or-later. The pre-built `atomvm.wasm`
+and stdlib `.beam` files distributed with this package are compiled from AtomVM
+source. See [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
+for full attribution.
