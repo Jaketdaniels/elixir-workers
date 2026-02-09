@@ -101,7 +101,7 @@ Three layers:
 2. **atomvm-wasi/** — C platform adapter compiled to WASM
 3. **Your Elixir code** — compiled to .beam, packed into .avm archive
 
-Each request creates a fresh WASM instance. The 559 KB `atomvm.wasm` runtime and stdlib .beam files are pre-built and distributed with the `elixir_workers` Hex package.
+Each request creates a fresh WASM instance. The `atomvm.wasm` runtime (~557 KB) and stdlib `.beam` files are built locally via `make priv` during framework development.
 
 ## Development (contributing)
 
