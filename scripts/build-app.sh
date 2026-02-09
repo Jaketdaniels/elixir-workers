@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Compile the Elixir application + minimal AtomVM stdlib to .beam files
+# Compile the Elixir application + AtomVM stdlib to .beam files
 # and package into an .avm archive.
 #
 set -euo pipefail
@@ -13,42 +13,59 @@ BUILD_DIR="${PROJECT_DIR}/build/beams"
 OUTPUT="${PROJECT_DIR}/build/app.avm"
 WORKER_OUTPUT="${PROJECT_DIR}/worker/app.avm"
 
+ESTDLIB_DIR="${ATOMVM_DIR}/libs/estdlib/src"
+EXAVMLIB_DIR="${ATOMVM_DIR}/libs/exavmlib/lib"
+
 echo "=== Building Elixir application ==="
 
-# Clean previous beams to avoid stale modules inflating the .avm
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 
 # --- Step 1: Compile AtomVM estdlib (Erlang) ---
-# Only modules actually used at runtime. Most erlang:* / lists:* / binary:*
-# functions are NIFs/BIFs built into the WASM binary and don't need .beam files.
-# maps.beam is needed for maps:to_list/1, maps:put/3, maps:iterator/1.
-echo "Compiling AtomVM Erlang stdlib..."
-ESTDLIB_DIR="${ATOMVM_DIR}/libs/estdlib/src"
+# Networking/dist/ets/crypto excluded — no WASI support.
+echo "Compiling Erlang stdlib..."
 ESTDLIB_MODULES=(
-    maps
+    gen gen_server gen_statem gen_event supervisor proc_lib sys
+    maps lists proplists queue sets
+    io io_lib string unicode
+    timer math base64 calendar
 )
 for mod in "${ESTDLIB_MODULES[@]}"; do
     if [ -f "${ESTDLIB_DIR}/${mod}.erl" ]; then
-        erlc -o "${BUILD_DIR}" "${ESTDLIB_DIR}/${mod}.erl" 2>/dev/null
+        erlc -o "${BUILD_DIR}" "${ESTDLIB_DIR}/${mod}.erl" 2>/dev/null || true
     fi
 done
-echo "  Compiled ${#ESTDLIB_MODULES[@]} Erlang stdlib modules"
+echo "  Compiled Erlang stdlib"
 
-# --- Step 2: Compile application modules ---
-echo "Compiling Elixir application..."
+# --- Step 2: Compile AtomVM exavmlib (Elixir stdlib) ---
+# Exclude hardware-specific modules (GPIO, I2C, LEDC, AVMPort).
+echo "Compiling Elixir stdlib..."
+EXAVMLIB_FILES=()
+while IFS= read -r f; do
+    base="$(basename "$f" .ex)"
+    case "$base" in
+        GPIO|I2C|LEDC|AVMPort|Console) continue ;;
+        *) EXAVMLIB_FILES+=("$f") ;;
+    esac
+done < <(find "${EXAVMLIB_DIR}" -name '*.ex' | sort)
+
+elixirc -o "${BUILD_DIR}" "${EXAVMLIB_FILES[@]}"
+echo "  Compiled Elixir stdlib"
+
+# --- Step 3: Compile application modules ---
+echo "Compiling application..."
 elixirc -o "${BUILD_DIR}" \
     "${APP_DIR}/lib/atomvm/wasi.ex" \
     "${APP_DIR}/lib/elixir_workers/json.ex" \
     "${APP_DIR}/lib/elixir_workers/router.ex" \
     "${APP_DIR}/lib/elixir_workers.ex"
-echo "  Compiled 4 application modules"
+echo "  Compiled application"
 
-# --- Step 3: Package into .avm ---
+# --- Step 4: Package into .avm ---
 echo "Packaging .avm archive..."
 python3 "${SCRIPT_DIR}/pack_avm.py" "${OUTPUT}" \
     "Elixir.ElixirWorkers.beam" "${BUILD_DIR}"
 
-# Copy to worker directory
 cp "${OUTPUT}" "${WORKER_OUTPUT}"
-echo "Copied to ${WORKER_OUTPUT}"
+echo ""
+ls -lh "${WORKER_OUTPUT}"

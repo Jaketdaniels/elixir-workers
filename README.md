@@ -110,22 +110,19 @@ Return a map with `"status"`, `"headers"`, and `"body"`:
 }
 ```
 
-## What works (and what doesn't)
+## What's included
 
-This runs on AtomVM, not full OTP. It's a subset of Elixir — think of it like Elixir for microcontrollers, but targeting the edge instead.
+The full AtomVM standard library is bundled (84 modules). Write normal Elixir — string interpolation, `Enum`, `Map`, `Keyword`, `GenServer`, `Supervisor`, `spawn`, `Process`, protocols, everything you'd expect.
 
-**Works great:**
-- Pattern matching, guards, multi-clause functions
-- Maps, lists, tuples, binaries
-- Recursion, modules, structs
-- Most `:erlang`, `:lists`, `:binary`, `:maps` builtins
-- The included `ElixirWorkers.JSON` module
+**Elixir stdlib:** Enum, Map, List, Keyword, MapSet, String.Chars, Enumerable, Collectable, Range, Integer, Tuple, IO, Base, Bitwise, Process, Module, Function, System, Access, Protocol, exceptions
 
-**Not available:**
-- Processes (`spawn`, message passing, GenServer, supervisors)
-- Networking (`:gen_tcp`, `:httpc` — use the stdin/stdout bridge instead)
-- File system access
-- String interpolation (`"hello #{name}"` — use `<<"hello ", name::binary>>` instead)
+**OTP behaviours:** GenServer, GenStatem, GenEvent, Supervisor, proc_lib, sys, timer
+
+**Erlang stdlib:** maps, lists, proplists, queue, sets, io, io_lib, string, unicode, math, base64, calendar, gen, gen_server, gen_statem, gen_event, supervisor
+
+**Platform limits** (Cloudflare Workers, not Elixir):
+- No direct network sockets (all I/O goes through the HTTP request/response bridge)
+- No persistent file system (use Cloudflare KV/R2 for storage)
 
 ## Project layout
 
@@ -157,11 +154,11 @@ elixir-workers/
 | Component | Raw | Gzipped |
 |-----------|-----|---------|
 | AtomVM WASM | 559 KB | — |
-| Elixir app (.avm) | 12 KB | — |
+| Elixir app (.avm) | 227 KB | — |
 | JS worker | 7 KB | — |
-| **Total bundle** | **601 KB** | **158 KB** |
+| **Total bundle** | **817 KB** | **240 KB** |
 
-Cloudflare measures the gzipped size against the limit (3 MB free / 10 MB paid). At 158 KB you're using 5% of the free tier — plenty of room to grow.
+Cloudflare measures the gzipped size against the limit (3 MB free / 10 MB paid). At 240 KB you're using 8% of the free tier.
 
 ## License
 
