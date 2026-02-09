@@ -150,7 +150,7 @@ export default {
         const cl = request.headers.get("content-length");
         if (cl && parseInt(cl, 10) > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
         body = await request.text();
-        if (body.length > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+        if (E.encode(body).length > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
       }
       const json = JSON.stringify({ method: request.method, url: url.pathname + url.search, headers: h, body });
 

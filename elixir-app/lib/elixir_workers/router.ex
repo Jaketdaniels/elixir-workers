@@ -77,7 +77,9 @@ defmodule ElixirWorkers.Router do
   end
 
   defp filter_sensitive_headers(hdrs) when is_map(hdrs) do
-    :maps.filter(fn key, _val -> key not in @sensitive_headers end, hdrs)
+    :maps.filter(fn key, _val ->
+      String.downcase(to_string(key)) not in @sensitive_headers
+    end, hdrs)
   end
 
   defp filter_sensitive_headers(hdrs), do: hdrs
