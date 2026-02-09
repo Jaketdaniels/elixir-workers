@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "<%= @app_name %>",
+  "main": "src/index.js",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "dev": {
+    "port": <%= @port %>
+  },
+
+  // Binary modules loaded alongside the worker
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": false
+    },
+    {
+      "type": "Data",
+      "globs": ["**/*.avm"],
+      "fallthrough": false
+    }
+  ]
+
+  // --- Bindings (uncomment as needed) ---
+
+  // KV namespaces:
+  // "kv_namespaces": [
+  //   { "binding": "MY_KV", "id": "your-kv-namespace-id" }
+  // ],
+
+  // D1 databases:
+  // "d1_databases": [
+  //   { "binding": "DB", "database_name": "my-db", "database_id": "your-d1-database-id" }
+  // ],
+
+  // Environment variables:
+  // "vars": {
+  //   "APP_NAME": "<%= @app_name %>"
+  // }
+}

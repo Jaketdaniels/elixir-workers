@@ -1,0 +1,12 @@
+{
+  "name": "<%= @app_name %>-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.63.0"
+  }
+}

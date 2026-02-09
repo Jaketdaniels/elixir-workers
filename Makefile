@@ -1,4 +1,4 @@
-.PHONY: all atomvm app dev deploy clean setup check-deps
+.PHONY: all atomvm app dev deploy clean setup check-deps priv
 
 export PATH := /opt/homebrew/opt/erlang/bin:$(PATH)
 
@@ -30,6 +30,31 @@ dev: all
 
 deploy: all
 	cd worker && npx wrangler deploy
+
+# Pre-compile stdlib and bundle artifacts into the framework package
+priv: check-deps
+	@echo "==> Pre-compiling stdlib for packages/elixir_workers/priv/"
+	@mkdir -p packages/elixir_workers/priv/stdlib
+	@# Compile Erlang stdlib
+	@for f in vendor/AtomVM/libs/estdlib/src/*.erl; do \
+		erlc -o packages/elixir_workers/priv/stdlib/ "$$f" 2>/dev/null || true; \
+	done
+	@# Compile Elixir stdlib (exclude hardware modules)
+	@for f in vendor/AtomVM/libs/exavmlib/lib/*.ex; do \
+		base=$$(basename "$$f"); \
+		case "$$base" in \
+			gpio.ex|i2c.ex|ledc.ex|avm_port.ex|console.ex) continue ;; \
+		esac; \
+		elixirc --no-deps-check -o packages/elixir_workers/priv/stdlib/ "$$f" 2>/dev/null || true; \
+	done
+	@# Copy atomvm.wasm
+	@if [ -f worker/atomvm.wasm ]; then \
+		cp worker/atomvm.wasm packages/elixir_workers/priv/atomvm.wasm; \
+		echo "Copied atomvm.wasm"; \
+	else \
+		echo "Warning: worker/atomvm.wasm not found. Run 'make atomvm' first."; \
+	fi
+	@echo "==> Done. Artifacts in packages/elixir_workers/priv/"
 
 clean:
 	rm -rf build/

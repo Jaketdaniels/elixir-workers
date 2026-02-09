@@ -1,0 +1,3 @@
+defmodule <%= @app_module %> do
+  use ElixirWorkers.App, router: <%= @app_module %>.Router
+end

@@ -5,4 +5,8 @@ worker/node_modules/
 worker/.wrangler/
 elixir-app/_build/
 elixir-app/deps/
+packages/*/_build/
+packages/*/deps/
+examples/*/_build/
+examples/*/deps/
 .DS_Store
