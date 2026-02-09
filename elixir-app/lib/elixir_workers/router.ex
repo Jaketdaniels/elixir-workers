@@ -1,87 +1,108 @@
 defmodule ElixirWorkers.Router do
-  @security_headers %{
-    "x-content-type-options" => "nosniff",
-    "x-frame-options" => "DENY",
-    "strict-transport-security" => "max-age=31536000; includeSubDomains"
-  }
+  @moduledoc false
 
-  @sensitive_headers [
-    "authorization", "cookie", "set-cookie",
-    "x-forwarded-for", "x-real-ip",
-    "cf-connecting-ip", "cf-ipcountry", "cf-ray",
-    "cf-visitor", "cf-worker", "cf-access-jwt-assertion",
-    "true-client-ip"
-  ]
-  @sensitive_headers_set MapSet.new(@sensitive_headers)
+  alias ElixirWorkers.Conn
+  alias ElixirWorkers.Middleware
+  alias ElixirWorkers.URL
 
-  def handle(%{"method" => "GET", "url" => "/"} = _req) do
-    %{
-      "status" => 200,
-      "headers" => :maps.merge(@security_headers, %{
-        "content-type" => "text/html; charset=utf-8",
-        "content-security-policy" => "default-src 'none'; style-src 'unsafe-inline'"
-      }),
-      "body" =>
-        <<"<!DOCTYPE html><html><head><title>Elixir Workers</title></head><body>",
-          "<h1>Running Elixir on Cloudflare Workers</h1>",
-          "<p>Powered by AtomVM + WASI</p>",
-          "</body></html>">>
-    }
+  # Entry point: run middleware, then dispatch to a matching route.
+  def call(conn) do
+    conn = Middleware.run(conn, middleware())
+
+    if conn["halted"] do
+      conn
+    else
+      dispatch(conn)
+    end
   end
 
-  def handle(%{"method" => "GET", "url" => "/api/health"} = _req) do
-    %{
-      "status" => 200,
-      "headers" => :maps.merge(@security_headers, %{"content-type" => "application/json"}),
-      "body" =>
-        ElixirWorkers.JSON.encode(%{
-          "status" => "ok",
-          "runtime" => "atomvm-wasi",
-          "platform" => "cloudflare-workers"
-        })
-    }
+  # --- Middleware Pipeline ---
+  # Customize this list to add/remove middleware for all routes.
+
+  defp middleware do
+    [
+      &Middleware.security_headers/1,
+      &Middleware.parse_body/1
+    ]
   end
 
-  def handle(%{"method" => "POST", "url" => "/api/echo", "body" => body, "headers" => hdrs} = _req) do
-    safe_hdrs = filter_sensitive_headers(hdrs)
+  # --- Route Table ---
+  # Each entry: {method, pattern_segments, handler_fun}
+  # Pattern segments starting with ":" capture path params.
+  # Method "*" matches any method.
 
-    %{
-      "status" => 200,
-      "headers" => :maps.merge(@security_headers, %{"content-type" => "application/json"}),
-      "body" =>
-        ElixirWorkers.JSON.encode(%{
-          "echo" => body,
-          "method" => "POST",
-          "headers" => safe_hdrs
-        })
-    }
+  defp routes do
+    [
+      {"GET", [], &page_home/1},
+      {"GET", ["api", "health"], &api_health/1},
+      {"POST", ["api", "echo"], &api_echo/1}
+    ]
   end
 
-  def handle(%{"method" => method} = _req) do
-    %{
-      "status" => 404,
-      "headers" => :maps.merge(@security_headers, %{"content-type" => "application/json"}),
-      "body" =>
-        ElixirWorkers.JSON.encode(%{
-          "error" => "not_found",
-          "method" => method
-        })
-    }
+  # --- Dispatcher ---
+
+  defp dispatch(conn) do
+    method = conn["method"]
+    segments = conn["path_segments"]
+
+    case find_route(routes(), method, segments) do
+      {:ok, handler, params} ->
+        conn = Map.put(conn, "path_params", params)
+        handler.(conn)
+
+      :no_match ->
+        not_found(conn)
+    end
   end
 
-  def handle(_req) do
-    %{
-      "status" => 400,
-      "headers" => :maps.merge(@security_headers, %{"content-type" => "application/json"}),
-      "body" => ElixirWorkers.JSON.encode(%{"error" => "bad_request"})
-    }
+  defp find_route([], _method, _segments), do: :no_match
+
+  defp find_route([{route_method, pattern, handler} | rest], method, segments) do
+    if route_method == method or route_method == "*" do
+      case URL.match_path(segments, pattern) do
+        {:ok, params} -> {:ok, handler, params}
+        :no_match -> find_route(rest, method, segments)
+      end
+    else
+      find_route(rest, method, segments)
+    end
   end
 
-  defp filter_sensitive_headers(hdrs) when is_map(hdrs) do
-    :maps.filter(fn key, _val ->
-      not MapSet.member?(@sensitive_headers_set, String.downcase(to_string(key)))
-    end, hdrs)
+  # --- Built-in Handlers ---
+
+  defp page_home(conn) do
+    Conn.html(conn, 200,
+      <<"<!DOCTYPE html><html><head><title>Elixir Workers</title></head><body>",
+        "<h1>Running Elixir on Cloudflare Workers</h1>",
+        "<p>Powered by AtomVM + WASI</p>",
+        "</body></html>">>
+    )
   end
 
-  defp filter_sensitive_headers(hdrs), do: hdrs
+  defp api_health(conn) do
+    Conn.json(conn, 200, %{
+      "status" => "ok",
+      "runtime" => "atomvm-wasi",
+      "platform" => "cloudflare-workers",
+      "env" => conn["env"]
+    })
+  end
+
+  defp api_echo(conn) do
+    Conn.json(conn, 200, %{
+      "echo" => conn["body"],
+      "method" => conn["method"],
+      "content_type" => Map.get(conn["headers"], "content-type", ""),
+      "query_params" => conn["query_params"],
+      "parsed_body" => conn["parsed_body"]
+    })
+  end
+
+  defp not_found(conn) do
+    Conn.json(conn, 404, %{
+      "error" => "not_found",
+      "method" => conn["method"],
+      "path" => conn["path"]
+    })
+  end
 end

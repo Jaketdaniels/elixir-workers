@@ -13,6 +13,16 @@ Request flow: `HTTP → JS Worker → stdin (JSON) → AtomVM WASM → Elixir ap
 
 Each request creates a fresh WASM instance. No state carries over between requests.
 
+### Two-pass binding protocol
+
+Elixir runs synchronously in WASM and can't call async JS APIs directly. To access CF bindings (KV, D1), the framework uses a two-pass protocol:
+
+1. **Pass 1**: JS sends enriched request (with `env`, `cf` properties) → WASM runs → Elixir returns either a final HTTP response OR a `{"_needs": [...]}` response listing binding data it needs.
+2. **Pass 2** (only if `_needs` returned): JS fulfills all needs in parallel (KV.get, D1.query) → re-runs WASM with fulfilled data in `"bindings"` field → Elixir returns final response + optional `"_effects"`.
+3. **Post-response**: JS executes write effects (KV.put, D1.exec) via `ctx.waitUntil()`.
+
+Routes that don't use bindings have zero overhead (single pass, same as before).
+
 ## Build
 
 ```bash
@@ -38,7 +48,7 @@ make deploy   # Deploy to Cloudflare
 | Output | Size | Description |
 |--------|------|-------------|
 | `worker/atomvm.wasm` | 559 KB | AtomVM VM compiled to WASM (-Oz, LTO, wasm-opt) |
-| `worker/app.avm` | 227 KB | Elixir app + full stdlib (84 modules) |
+| `worker/app.avm` | 245 KB | Elixir app + full stdlib (91 modules) |
 | **Total gzipped** | **240 KB** | 8% of CF free tier (3 MB limit) |
 
 ### Build pipeline
@@ -69,14 +79,21 @@ make deploy   # Deploy to Cloudflare
 | `atomvm-wasi/src/platform_nifs.c` | NIFs: read_stdin/0, write_stdout/1, platform/0 |
 | `atomvm-wasi/CMakeLists.txt` | Build config — flags, excluded modules, toolchain |
 | `elixir-app/lib/elixir_workers.ex` | Entry point: start/0 reads stdin, routes, writes stdout |
-| `elixir-app/lib/elixir_workers/router.ex` | HTTP router — pattern matches method + path |
+| `elixir-app/lib/elixir_workers/conn.ex` | Connection map builder + response helpers (html, json, text) |
+| `elixir-app/lib/elixir_workers/router.ex` | HTTP router — route table, path params, middleware pipeline |
 | `elixir-app/lib/elixir_workers/json.ex` | JSON encoder/decoder (no deps, uses iolist) |
+| `elixir-app/lib/elixir_workers/url.ex` | URL parsing, query decoding, path matching |
+| `elixir-app/lib/elixir_workers/body.ex` | Request body parsing (urlencoded, JSON) |
+| `elixir-app/lib/elixir_workers/html.ex` | HTML escaping, tag building helpers |
+| `elixir-app/lib/elixir_workers/kv.ex` | CF KV access (transparent two-pass reads, write effects) |
+| `elixir-app/lib/elixir_workers/d1.ex` | CF D1 SQLite access (transparent two-pass reads, write effects) |
+| `elixir-app/lib/elixir_workers/middleware.ex` | Composable middleware (security headers, CORS, body parsing) |
 | `elixir-app/lib/atomvm/wasi.ex` | NIF bridge stubs for read_stdin/write_stdout |
 | `scripts/build-atomvm.sh` | Compiles AtomVM C → WASM via wasi-sdk + CMake |
 | `scripts/build-app.sh` | Compiles Elixir/Erlang → .beam → .avm |
 | `scripts/pack_avm.py` | AVM archive creator (strips debug chunks, handles LitT) |
 
-## Bundled stdlib (84 modules)
+## Bundled stdlib (91 modules)
 
 The full AtomVM standard library is bundled. All standard Elixir modules work:
 
@@ -115,14 +132,24 @@ Unresolved `env` symbols (ETS, distribution) are stubbed as no-ops in the JS WAS
 
 ## JSON protocol
 
-stdin (request):
+stdin (request — enriched by JS):
 ```json
-{"method":"GET","url":"/path","headers":{"host":"example.com"},"body":""}
+{"method":"GET","url":"/path?q=1","headers":{"host":"example.com"},"body":"","env":{"APP_NAME":"my-app"},"cf":{"colo":"DFW"}}
 ```
 
-stdout (response):
+stdout (final response):
 ```json
 {"status":200,"headers":{"content-type":"text/html"},"body":"<h1>Hello</h1>"}
+```
+
+stdout (needs bindings — triggers pass 2):
+```json
+{"_needs":[{"type":"kv_get","ns":"MY_KV","key":"user:1","id":"kv_get:MY_KV:user:1"}],"_state":{}}
+```
+
+stdout (response with effects — writes executed post-response):
+```json
+{"status":200,"headers":{},"body":"ok","_effects":[{"type":"kv_put","ns":"MY_KV","key":"x","value":"y"}]}
 ```
 
 The JS shim extracts the first complete JSON object from stdout using brace-counting (AtomVM appends `Return value: ok\n` after the JSON).

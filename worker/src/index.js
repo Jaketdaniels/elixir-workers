@@ -5,10 +5,10 @@ const encoder = new TextEncoder(), decoder = new TextDecoder();
 let A = null;
 const getAvm = () => (A ??= new Uint8Array(avm));
 
-class X extends Error { constructor(c) { super(); this.code = c; } }
+class WasmExit extends Error { constructor(c) { super(); this.code = c; } }
 
 const S = () => 0, N = () => 52;
-const env = {
+const envStubs = {
   dist_send_message: S, dist_send_unlink_id_ack: S, dist_send_payload_exit: S,
   ets_delete_owned_tables: S, ets_init: S, ets_destroy: S, dist_spawn_reply: S,
   dist_monitor: S, ets_delete: S, ets_drop_table: S, ets_insert: S,
@@ -16,6 +16,8 @@ const env = {
   dist_send_link: S, dist_send_unlink_id: S, ets_lookup_maybe_gc: S,
   ets_lookup_element_maybe_gc: S,
 };
+
+// --- WASI Runtime ---
 
 function mkWasi(stdin, args) {
   const sin = encoder.encode(stdin);
@@ -121,7 +123,7 @@ function mkWasi(stdin, args) {
         const dv = v(); dv.setUint8(r + 16, 4); dv.setBigUint64(r + 32, BigInt(d.length), true);
         return 0;
       },
-      proc_exit(c) { throw new X(c); },
+      proc_exit(c) { throw new WasmExit(c); },
       random_get(p, l) { crypto.getRandomValues(new Uint8Array(mem.buffer, p, l)); return 0; },
       sched_yield: S, poll_oneoff: S, proc_raise: N,
       sock_recv: N, sock_send: N, sock_shutdown: N,
@@ -138,52 +140,253 @@ function mkWasi(stdin, args) {
   };
 }
 
+// --- WASM Execution ---
+
+function runWasm(stdinJson) {
+  const w = mkWasi(stdinJson, ["atomvm", "app.avm"]);
+  w.addFile("app.avm", getAvm());
+  const inst = new WebAssembly.Instance(wasm, { wasi_snapshot_preview1: w.imports, env: envStubs });
+  w.setMem(inst.exports.memory);
+
+  try {
+    inst.exports._start();
+  } catch (e) {
+    if (e instanceof WasmExit) {
+      if (e.code !== 0) {
+        console.error("WASM exit " + e.code + ": " + w.stdout().substring(0, 500));
+        throw new Error("runtime error");
+      }
+    } else {
+      throw e;
+    }
+  }
+
+  return parseOutput(w.stdout());
+}
+
+// Parse the first complete JSON object from WASM stdout.
+function parseOutput(out) {
+  const i = out.indexOf("{");
+  if (i < 0) return { error: "no output" };
+
+  let d = 0, s = false, esc = false, end = -1;
+  for (let j = i; j < out.length; j++) {
+    const c = out[j];
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') { s = !s; continue; }
+    if (s) continue;
+    if (c === "{") d++;
+    if (c === "}") { d--; if (!d) { end = j; break; } }
+  }
+  if (end < 0) return { error: "incomplete" };
+
+  return JSON.parse(out.substring(i, end + 1));
+}
+
+// --- Env Extraction ---
+
+// Extract plain string env vars (skip KV/D1/R2 binding objects).
+function extractEnvVars(workerEnv) {
+  const vars = {};
+  for (const key of Object.keys(workerEnv)) {
+    const val = workerEnv[key];
+    if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
+      vars[key] = String(val);
+    }
+  }
+  return vars;
+}
+
+// --- Binding Fulfillment ---
+
+// Fulfill all binding needs from a _needs response. Returns a bindings map.
+async function fulfillNeeds(needs, workerEnv) {
+  const bindings = {};
+
+  const promises = needs.map(async (need) => {
+    try {
+      switch (need.type) {
+        case "kv_get": {
+          const ns = workerEnv[need.ns];
+          if (!ns) { bindings[need.id] = null; return; }
+          bindings[need.id] = await ns.get(need.key);
+          break;
+        }
+        case "kv_get_meta": {
+          const ns = workerEnv[need.ns];
+          if (!ns) { bindings[need.id] = null; return; }
+          const { value, metadata } = await ns.getWithMetadata(need.key);
+          bindings[need.id] = { value, metadata };
+          break;
+        }
+        case "kv_list": {
+          const ns = workerEnv[need.ns];
+          if (!ns) { bindings[need.id] = null; return; }
+          const opts = {};
+          if (need.prefix) opts.prefix = need.prefix;
+          if (need.limit) opts.limit = need.limit;
+          if (need.cursor) opts.cursor = need.cursor;
+          const result = await ns.list(opts);
+          bindings[need.id] = {
+            keys: result.keys.map(k => ({ name: k.name, metadata: k.metadata })),
+            list_complete: result.list_complete,
+            cursor: result.cursor,
+          };
+          break;
+        }
+        case "d1_query": {
+          const db = workerEnv[need.db];
+          if (!db) { bindings[need.id] = null; return; }
+          const stmt = db.prepare(need.sql);
+          const res = need.params && need.params.length
+            ? await stmt.bind(...need.params).all()
+            : await stmt.all();
+          bindings[need.id] = { rows: res.results };
+          break;
+        }
+        default:
+          console.warn("Unknown need type:", need.type);
+          bindings[need.id] = null;
+      }
+    } catch (e) {
+      console.error("Binding fulfillment error:", need.type, need.id, e.message);
+      bindings[need.id] = null;
+    }
+  });
+
+  await Promise.all(promises);
+  return bindings;
+}
+
+// --- Effect Execution ---
+
+// Execute write effects after the response is sent.
+async function executeEffects(effects, workerEnv) {
+  for (const eff of effects) {
+    try {
+      switch (eff.type) {
+        case "kv_put": {
+          const ns = workerEnv[eff.ns];
+          if (!ns) break;
+          const opts = {};
+          if (eff.expiration_ttl) opts.expirationTtl = eff.expiration_ttl;
+          if (eff.metadata) opts.metadata = eff.metadata;
+          await ns.put(eff.key, eff.value, opts);
+          break;
+        }
+        case "kv_delete": {
+          const ns = workerEnv[eff.ns];
+          if (!ns) break;
+          await ns.delete(eff.key);
+          break;
+        }
+        case "d1_exec": {
+          const db = workerEnv[eff.db];
+          if (!db) break;
+          const stmt = db.prepare(eff.sql);
+          if (eff.params && eff.params.length) await stmt.bind(...eff.params).run();
+          else await stmt.run();
+          break;
+        }
+        case "d1_batch": {
+          const db = workerEnv[eff.db];
+          if (!db) break;
+          const stmts = eff.statements.map(s => {
+            const stmt = db.prepare(s.sql);
+            return s.params && s.params.length ? stmt.bind(...s.params) : stmt;
+          });
+          await db.batch(stmts);
+          break;
+        }
+        default:
+          console.warn("Unknown effect type:", eff.type);
+      }
+    } catch (e) {
+      console.error("Effect execution error:", eff.type, e.message);
+    }
+  }
+}
+
+// --- Worker Entry Point ---
+
 const MAX_BODY_SIZE = 1024 * 1024; // 1 MB
 
 export default {
-  async fetch(request) {
+  async fetch(request, workerEnv, ctx) {
     try {
       const url = new URL(request.url);
-      const h = {}; request.headers.forEach((v, k) => { h[k] = v; });
+
+      // Extract headers
+      const h = {};
+      request.headers.forEach((v, k) => { h[k] = v; });
+
+      // Read body with size limit
       let body = "";
       if (request.body) {
         const cl = request.headers.get("content-length");
-        if (cl && parseInt(cl, 10) > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+        if (cl && parseInt(cl, 10) > MAX_BODY_SIZE) {
+          return new Response(JSON.stringify({ error: "payload too large" }), {
+            status: 413, headers: { "content-type": "application/json" },
+          });
+        }
         body = await request.text();
-        if (encoder.encode(body).length > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
-      }
-      const json = JSON.stringify({ method: request.method, url: url.pathname + url.search, headers: h, body });
-
-      const w = mkWasi(json, ["atomvm", "app.avm"]);
-      w.addFile("app.avm", getAvm());
-      const inst = await WebAssembly.instantiate(wasm, { wasi_snapshot_preview1: w.imports, env });
-      w.setMem(inst.exports.memory);
-
-      try { inst.exports._start(); } catch (e) {
-        if (e instanceof X) { if (e.code !== 0) { console.error("WASM exit " + e.code + ": " + w.stdout().substring(0, 500)); throw new Error("runtime error"); } }
-        else throw e;
+        if (encoder.encode(body).length > MAX_BODY_SIZE) {
+          return new Response(JSON.stringify({ error: "payload too large" }), {
+            status: 413, headers: { "content-type": "application/json" },
+          });
+        }
       }
 
-      const out = w.stdout(), i = out.indexOf("{");
-      if (i < 0) return new Response(JSON.stringify({ error: "no output" }), { status: 502, headers: { "content-type": "application/json" } });
+      // Build enriched request for Elixir
+      const enrichedReq = {
+        method: request.method,
+        url: url.pathname + url.search,
+        headers: h,
+        body,
+        env: extractEnvVars(workerEnv),
+        cf: request.cf ? { ...request.cf } : {},
+      };
 
-      let d = 0, s = false, esc = false, end = -1;
-      for (let j = i; j < out.length; j++) {
-        const c = out[j];
-        if (esc) { esc = false; continue; }
-        if (c === "\\") { esc = true; continue; }
-        if (c === '"') { s = !s; continue; }
-        if (s) continue;
-        if (c === "{") d++;
-        if (c === "}") { d--; if (!d) { end = j; break; } }
+      // Pass 1: run WASM
+      let result = runWasm(JSON.stringify(enrichedReq));
+
+      if (result.error) {
+        return new Response(JSON.stringify(result), {
+          status: 502, headers: { "content-type": "application/json" },
+        });
       }
-      if (end < 0) return new Response(JSON.stringify({ error: "incomplete" }), { status: 502, headers: { "content-type": "application/json" } });
 
-      const r = JSON.parse(out.substring(i, end + 1));
-      return new Response(r.body, { status: r.status, headers: r.headers });
+      // Pass 2: if Elixir needs binding data, fulfill and re-run
+      if (result._needs && result._needs.length > 0) {
+        const bindings = await fulfillNeeds(result._needs, workerEnv);
+
+        enrichedReq.bindings = bindings;
+        enrichedReq._state = result._state || {};
+
+        result = runWasm(JSON.stringify(enrichedReq));
+
+        if (result.error) {
+          return new Response(JSON.stringify(result), {
+            status: 502, headers: { "content-type": "application/json" },
+          });
+        }
+      }
+
+      // Execute write effects after response (non-blocking)
+      if (result._effects && result._effects.length > 0) {
+        ctx.waitUntil(executeEffects(result._effects, workerEnv));
+      }
+
+      // Return HTTP response
+      const respHeaders = { ...result.headers };
+      delete respHeaders._effects; // clean up internal fields
+      return new Response(result.body, { status: result.status, headers: respHeaders });
     } catch (e) {
       console.error("Worker error:", e.message || "unknown", e.stack || "");
-      return new Response(JSON.stringify({ error: "internal server error" }), { status: 500, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ error: "internal server error" }), {
+        status: 500, headers: { "content-type": "application/json" },
+      });
     }
   },
 };

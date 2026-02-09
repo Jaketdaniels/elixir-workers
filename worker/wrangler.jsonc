@@ -21,4 +21,26 @@
       "fallthrough": false
     }
   ]
+
+  // --- Bindings (uncomment as needed) ---
+
+  // KV namespaces:
+  // "kv_namespaces": [
+  //   { "binding": "MY_KV", "id": "your-kv-namespace-id" }
+  // ],
+
+  // D1 databases:
+  // "d1_databases": [
+  //   { "binding": "DB", "database_name": "my-db", "database_id": "your-d1-database-id" }
+  // ],
+
+  // R2 buckets:
+  // "r2_buckets": [
+  //   { "binding": "BUCKET", "bucket_name": "my-bucket" }
+  // ],
+
+  // Environment variables:
+  // "vars": {
+  //   "APP_NAME": "my-elixir-app"
+  // }
 }

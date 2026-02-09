@@ -1,8 +1,9 @@
 defmodule ElixirWorkers do
   def start() do
-    request = read_request()
-    response = ElixirWorkers.Router.handle(request)
-    write_response(response)
+    raw = read_request()
+    conn = ElixirWorkers.Conn.new(raw)
+    conn = ElixirWorkers.Router.call(conn)
+    write_response(ElixirWorkers.Conn.to_response(conn))
   end
 
   defp read_request do
