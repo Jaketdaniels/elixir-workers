@@ -32,10 +32,10 @@ fi
 
 echo "Using wasi-sdk at: ${WASI_SDK}"
 
-# Check for AtomVM source
+# Check for AtomVM source (initialized via git submodule)
 if [ ! -f "${PROJECT_DIR}/vendor/AtomVM/src/libAtomVM/globalcontext.c" ]; then
-    echo "AtomVM source not found. Cloning..."
-    git clone --depth 1 https://github.com/atomvm/AtomVM.git "${PROJECT_DIR}/vendor/AtomVM"
+    echo "AtomVM source not found. Run 'make setup' or 'git submodule update --init'."
+    exit 1
 fi
 
 # Create build directory

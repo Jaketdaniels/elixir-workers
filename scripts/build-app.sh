@@ -29,11 +29,18 @@ ESTDLIB_MODULES=(
     io io_lib string unicode
     timer math base64 calendar
 )
+ESTDLIB_ERRORS=0
 for mod in "${ESTDLIB_MODULES[@]}"; do
     if [ -f "${ESTDLIB_DIR}/${mod}.erl" ]; then
-        erlc -o "${BUILD_DIR}" "${ESTDLIB_DIR}/${mod}.erl" 2>/dev/null || true
+        if ! erlc -o "${BUILD_DIR}" "${ESTDLIB_DIR}/${mod}.erl" 2>&1; then
+            echo "  Warning: failed to compile ${mod}.erl (may be optional)"
+            ESTDLIB_ERRORS=$(( ESTDLIB_ERRORS + 1 ))
+        fi
     fi
 done
+if [ "$ESTDLIB_ERRORS" -gt 0 ]; then
+    echo "  Warning: ${ESTDLIB_ERRORS} stdlib module(s) failed to compile"
+fi
 echo "  Compiled Erlang stdlib"
 
 # --- Step 2: Compile AtomVM exavmlib (Elixir stdlib) ---

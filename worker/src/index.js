@@ -138,12 +138,20 @@ function mkWasi(stdin, args) {
   };
 }
 
+const MAX_BODY_SIZE = 1024 * 1024; // 1 MB
+
 export default {
   async fetch(request) {
     try {
       const url = new URL(request.url);
       const h = {}; request.headers.forEach((v, k) => { h[k] = v; });
-      const body = request.body ? await request.text() : "";
+      let body = "";
+      if (request.body) {
+        const cl = request.headers.get("content-length");
+        if (cl && parseInt(cl, 10) > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+        body = await request.text();
+        if (body.length > MAX_BODY_SIZE) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+      }
       const json = JSON.stringify({ method: request.method, url: url.pathname + url.search, headers: h, body });
 
       const w = mkWasi(json, ["atomvm", "app.avm"]);
@@ -152,7 +160,7 @@ export default {
       w.setMem(inst.exports.memory);
 
       try { inst.exports._start(); } catch (e) {
-        if (e instanceof X) { if (e.code !== 0) throw new Error("exit " + e.code + ": " + w.stdout().substring(0, 500)); }
+        if (e instanceof X) { if (e.code !== 0) { console.error("WASM exit " + e.code + ": " + w.stdout().substring(0, 500)); throw new Error("runtime error"); } }
         else throw e;
       }
 
@@ -174,7 +182,8 @@ export default {
       const r = JSON.parse(out.substring(i, end + 1));
       return new Response(r.body, { status: r.status, headers: r.headers });
     } catch (e) {
-      return new Response(JSON.stringify({ error: e.message || "unknown" }), { status: 500, headers: { "content-type": "application/json" } });
+      console.error("Worker error:", e.message || "unknown", e.stack || "");
+      return new Response(JSON.stringify({ error: "internal server error" }), { status: 500, headers: { "content-type": "application/json" } });
     }
   },
 };

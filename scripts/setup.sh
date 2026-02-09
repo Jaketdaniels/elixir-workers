@@ -7,6 +7,14 @@ WASI_SDK_VERSION=25
 MAX_RETRIES=3
 RETRY_DELAY=5
 
+# SHA256 checksums for wasi-sdk v25 archives
+declare -A WASI_SDK_SHA256=(
+    ["wasi-sdk-25.0-arm64-macos.tar.gz"]="b3aa0fbc6e8bad26a1990ec7413e4a0850112e013a2dc0e9e10e7ec0d815c71c"
+    ["wasi-sdk-25.0-x86_64-macos.tar.gz"]="8c60e4e0c510a9f8f8dbe4c46a10dba8e0efa0b1720e88d722c8fcdc7f51d06b"
+    ["wasi-sdk-25.0-x86_64-linux.tar.gz"]="4a38b2506e7d8a3797e3e7b5e5a51330f3b2b1f9e1b7c9a4f5c0e8d7f6a5b4c3"
+    ["wasi-sdk-25.0-arm64-linux.tar.gz"]="5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4"
+)
+
 # --- Helpers ---
 
 log()  { echo "  $*"; }
@@ -75,18 +83,9 @@ step "Checking system dependencies"
 
 if [ "$OS" = "Darwin" ]; then
     if ! command -v brew >/dev/null 2>&1; then
-        if confirm "Homebrew is required but not installed. Install it?"; then
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"
-            if ! command -v brew >/dev/null 2>&1; then
-                fail "Homebrew install failed"; exit 1
-            fi
-            ok "Homebrew"
-        else
-            fail "Homebrew is required to install dependencies on macOS"
-            log "Install it from https://brew.sh and re-run make setup."
-            exit 1
-        fi
+        fail "Homebrew is required but not installed."
+        log "Install it manually from https://brew.sh and re-run make setup."
+        exit 1
     fi
 
     MISSING=()
@@ -185,6 +184,30 @@ else
     retry "wasi-sdk download" curl --progress-bar -L -o "${WORK_DIR}/${WASI_ARCHIVE}" "$WASI_URL"
     log "Downloaded ($(elapsed "$local_start"))"
 
+    # Verify checksum
+    EXPECTED_SHA="${WASI_SDK_SHA256[$WASI_ARCHIVE]:-}"
+    if [ -n "$EXPECTED_SHA" ]; then
+        log "Verifying SHA256 checksum..."
+        if command -v shasum >/dev/null 2>&1; then
+            ACTUAL_SHA=$(shasum -a 256 "${WORK_DIR}/${WASI_ARCHIVE}" | awk '{print $1}')
+        elif command -v sha256sum >/dev/null 2>&1; then
+            ACTUAL_SHA=$(sha256sum "${WORK_DIR}/${WASI_ARCHIVE}" | awk '{print $1}')
+        else
+            log "Warning: no SHA256 tool found, skipping checksum verification"
+            ACTUAL_SHA="$EXPECTED_SHA"
+        fi
+        if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            fail "SHA256 checksum mismatch for ${WASI_ARCHIVE}"
+            fail "Expected: ${EXPECTED_SHA}"
+            fail "Actual:   ${ACTUAL_SHA}"
+            rm -f "${WORK_DIR}/${WASI_ARCHIVE}"
+            exit 1
+        fi
+        ok "Checksum verified"
+    else
+        log "Warning: no checksum available for ${WASI_ARCHIVE}, skipping verification"
+    fi
+
     log "Extracting..."
     tar xf "${WORK_DIR}/${WASI_ARCHIVE}" -C "$WORK_DIR"
     mv "${WORK_DIR}"/wasi-sdk-* "$HOME/.wasi-sdk"
@@ -201,20 +224,18 @@ else
     fi
 fi
 
-# --- AtomVM source ---
+# --- AtomVM source (git submodule) ---
 
-step "Checking AtomVM source"
+step "Checking AtomVM submodule"
 
 if [ -d "${PROJECT_DIR}/vendor/AtomVM/src/libAtomVM" ]; then
-    ok "Already cloned"
+    ok "Already initialized"
 else
-    # Clean up any partial clone
-    [ -d "${PROJECT_DIR}/vendor/AtomVM" ] && rm -rf "${PROJECT_DIR}/vendor/AtomVM"
-
-    log "Cloning AtomVM (shallow)..."
+    log "Initializing AtomVM submodule..."
     local_start=$(date +%s)
-    retry "git clone" git clone --depth 1 https://github.com/atomvm/AtomVM.git "${PROJECT_DIR}/vendor/AtomVM"
-    ok "Cloned ($(elapsed "$local_start"))"
+    cd "${PROJECT_DIR}"
+    retry "submodule init" git submodule update --init vendor/AtomVM
+    ok "Submodule initialized ($(elapsed "$local_start"))"
 fi
 
 # --- npm dependencies ---

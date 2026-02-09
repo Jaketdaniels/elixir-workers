@@ -3,7 +3,6 @@ worker/atomvm.wasm
 worker/app.avm
 worker/node_modules/
 worker/.wrangler/
-vendor/AtomVM/
 elixir-app/_build/
 elixir-app/deps/
 .DS_Store

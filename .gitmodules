@@ -1,0 +1,3 @@
+[submodule "vendor/AtomVM"]
+	path = vendor/AtomVM
+	url = https://github.com/atomvm/AtomVM.git

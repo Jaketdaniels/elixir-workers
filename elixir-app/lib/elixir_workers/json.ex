@@ -2,19 +2,25 @@ defmodule ElixirWorkers.JSON do
   # Minimal JSON encoder/decoder for AtomVM.
   # Supports: strings, integers, floats, booleans, null, objects, arrays.
 
+  @max_depth 32
+
   # ---- Decoder ----
 
   def decode(binary) when is_binary(binary) do
-    {value, _rest} = decode_value(binary, 0)
+    {value, _rest} = decode_value(binary, 0, 0)
     value
   end
 
-  defp decode_value(bin, pos) do
+  defp decode_value(_bin, _pos, depth) when depth > @max_depth do
+    :erlang.error(:json_max_depth_exceeded)
+  end
+
+  defp decode_value(bin, pos, depth) do
     pos = skip_ws(bin, pos)
 
     case :binary.at(bin, pos) do
-      ?{ -> decode_object(bin, pos + 1)
-      ?[ -> decode_array(bin, pos + 1)
+      ?{ -> decode_object(bin, pos + 1, depth + 1)
+      ?[ -> decode_array(bin, pos + 1, depth + 1)
       ?" -> decode_string(bin, pos + 1)
       ?t -> {true, pos + 4}
       ?f -> {false, pos + 5}
@@ -23,46 +29,46 @@ defmodule ElixirWorkers.JSON do
     end
   end
 
-  defp decode_object(bin, pos) do
+  defp decode_object(bin, pos, depth) do
     pos = skip_ws(bin, pos)
 
     case :binary.at(bin, pos) do
       ?} -> {%{}, pos + 1}
-      _ -> decode_pairs(bin, pos, %{})
+      _ -> decode_pairs(bin, pos, %{}, depth)
     end
   end
 
-  defp decode_pairs(bin, pos, acc) do
+  defp decode_pairs(bin, pos, acc, depth) do
     pos = skip_ws(bin, pos)
     {key, pos} = decode_string(bin, pos + 1)
     pos = skip_ws(bin, pos)
     pos = pos + 1
-    {value, pos} = decode_value(bin, pos)
+    {value, pos} = decode_value(bin, pos, depth)
     acc = :maps.put(key, value, acc)
     pos = skip_ws(bin, pos)
 
     case :binary.at(bin, pos) do
-      ?, -> decode_pairs(bin, pos + 1, acc)
+      ?, -> decode_pairs(bin, pos + 1, acc, depth)
       ?} -> {acc, pos + 1}
     end
   end
 
-  defp decode_array(bin, pos) do
+  defp decode_array(bin, pos, depth) do
     pos = skip_ws(bin, pos)
 
     case :binary.at(bin, pos) do
       ?] -> {[], pos + 1}
-      _ -> decode_items(bin, pos, [])
+      _ -> decode_items(bin, pos, [], depth)
     end
   end
 
-  defp decode_items(bin, pos, acc) do
-    {value, pos} = decode_value(bin, pos)
+  defp decode_items(bin, pos, acc, depth) do
+    {value, pos} = decode_value(bin, pos, depth)
     acc = [value | acc]
     pos = skip_ws(bin, pos)
 
     case :binary.at(bin, pos) do
-      ?, -> decode_items(bin, pos + 1, acc)
+      ?, -> decode_items(bin, pos + 1, acc, depth)
       ?] -> {:lists.reverse(acc), pos + 1}
     end
   end
@@ -89,10 +95,47 @@ defmodule ElixirWorkers.JSON do
       ?t -> {?\t, pos + 1}
       ?b -> {?\b, pos + 1}
       ?f -> {?\f, pos + 1}
+      ?u -> dec_unicode(bin, pos + 1)
     end
   end
 
-  # Collect number chars and track if it's a float in one pass
+  defp dec_unicode(bin, pos) do
+    hex = :binary.part(bin, pos, 4)
+    codepoint = hex_to_int(hex, 0, 0)
+
+    # Handle UTF-16 surrogate pairs (\uD800-\uDBFF followed by \uDC00-\uDFFF)
+    if codepoint >= 0xD800 and codepoint <= 0xDBFF do
+      # Expect \uXXXX low surrogate
+      if :binary.at(bin, pos + 4) == ?\\ and :binary.at(bin, pos + 5) == ?u do
+        low_hex = :binary.part(bin, pos + 6, 4)
+        low = hex_to_int(low_hex, 0, 0)
+        combined = 0x10000 + (codepoint - 0xD800) * 0x400 + (low - 0xDC00)
+        {combined, pos + 10}
+      else
+        {0xFFFD, pos + 4}
+      end
+    else
+      {codepoint, pos + 4}
+    end
+  end
+
+  defp hex_to_int(_bin, 4, acc), do: acc
+
+  defp hex_to_int(bin, i, acc) do
+    c = :binary.at(bin, i)
+
+    digit =
+      cond do
+        c >= ?0 and c <= ?9 -> c - ?0
+        c >= ?a and c <= ?f -> c - ?a + 10
+        c >= ?A and c <= ?F -> c - ?A + 10
+      end
+
+    hex_to_int(bin, i + 1, acc * 16 + digit)
+  end
+
+  # Collect number chars and track if it's a float in one pass.
+  # Validates JSON number format: -?[0-9]+(.[0-9]+)?([eE][+-]?[0-9]+)?
   defp decode_number(bin, pos) do
     {chars, end_pos, is_float} = collect_num(bin, pos, [], false)
     str = :erlang.list_to_binary(chars)
@@ -114,14 +157,54 @@ defmodule ElixirWorkers.JSON do
       c = :binary.at(bin, pos)
 
       case c do
-        c when c in [?0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?-, ?+] ->
+        ?- when acc == [] ->
           collect_num(bin, pos + 1, [c | acc], is_float)
 
-        c when c in [?., ?e, ?E] ->
+        c when c >= ?0 and c <= ?9 ->
+          collect_num(bin, pos + 1, [c | acc], is_float)
+
+        ?. when not is_float ->
           collect_num(bin, pos + 1, [c | acc], true)
+
+        c when c in [?e, ?E] and not is_float ->
+          collect_num_exp(bin, pos + 1, [c | acc])
 
         _ ->
           {:lists.reverse(acc), pos, is_float}
+      end
+    end
+  end
+
+  # After seeing e/E, allow optional +/- then digits
+  defp collect_num_exp(bin, pos, acc) do
+    if pos >= byte_size(bin) do
+      {:lists.reverse(acc), pos, true}
+    else
+      c = :binary.at(bin, pos)
+
+      case c do
+        c when c in [?+, ?-] ->
+          collect_num_exp_digits(bin, pos + 1, [c | acc])
+
+        c when c >= ?0 and c <= ?9 ->
+          collect_num_exp_digits(bin, pos + 1, [c | acc])
+
+        _ ->
+          {:lists.reverse(acc), pos, true}
+      end
+    end
+  end
+
+  defp collect_num_exp_digits(bin, pos, acc) do
+    if pos >= byte_size(bin) do
+      {:lists.reverse(acc), pos, true}
+    else
+      c = :binary.at(bin, pos)
+
+      if c >= ?0 and c <= ?9 do
+        collect_num_exp_digits(bin, pos + 1, [c | acc])
+      else
+        {:lists.reverse(acc), pos, true}
       end
     end
   end
@@ -183,6 +266,14 @@ defmodule ElixirWorkers.JSON do
         ?\n -> enc_str(bin, pos + 1, [?n, ?\\ | acc])
         ?\r -> enc_str(bin, pos + 1, [?r, ?\\ | acc])
         ?\t -> enc_str(bin, pos + 1, [?t, ?\\ | acc])
+        c when c < 0x20 ->
+          hex = :erlang.integer_to_list(c, 16)
+          padded = case length(hex) do
+            1 -> [?\\, ?u, ?0, ?0, ?0 | hex]
+            2 -> [?\\, ?u, ?0, ?0 | hex]
+            _ -> [?\\, ?u, ?0 | hex]
+          end
+          enc_str(bin, pos + 1, :lists.reverse(padded) ++ acc)
         _ -> enc_str(bin, pos + 1, [c | acc])
       end
     end
