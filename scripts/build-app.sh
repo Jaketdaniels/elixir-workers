@@ -22,7 +22,6 @@ rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 
 # --- Step 1: Compile AtomVM estdlib (Erlang) ---
-# Networking/dist/ets/crypto excluded — no WASI support.
 echo "Compiling Erlang stdlib..."
 ESTDLIB_MODULES=(
     gen gen_server gen_statem gen_event supervisor proc_lib sys
@@ -38,7 +37,6 @@ done
 echo "  Compiled Erlang stdlib"
 
 # --- Step 2: Compile AtomVM exavmlib (Elixir stdlib) ---
-# Exclude hardware-specific modules (GPIO, I2C, LEDC, AVMPort).
 echo "Compiling Elixir stdlib..."
 EXAVMLIB_FILES=()
 while IFS= read -r f; do
@@ -54,17 +52,28 @@ echo "  Compiled Elixir stdlib"
 
 # --- Step 3: Compile application modules ---
 echo "Compiling application..."
-elixirc -o "${BUILD_DIR}" \
-    "${APP_DIR}/lib/atomvm/wasi.ex" \
-    "${APP_DIR}/lib/elixir_workers/json.ex" \
-    "${APP_DIR}/lib/elixir_workers/router.ex" \
-    "${APP_DIR}/lib/elixir_workers.ex"
-echo "  Compiled application"
+APP_FILES=()
+while IFS= read -r f; do
+    APP_FILES+=("$f")
+done < <(find "${APP_DIR}/lib" -name '*.ex' | sort)
 
-# --- Step 4: Package into .avm ---
+elixirc -o "${BUILD_DIR}" "${APP_FILES[@]}"
+echo "  Compiled ${#APP_FILES[@]} app modules"
+
+# --- Step 4: Detect startup module ---
+STARTUP=$(grep -rl 'def start' "${APP_DIR}/lib" --include='*.ex' | head -1)
+if [ -z "$STARTUP" ]; then
+    echo "Error: No module with start/0 found in elixir-app/lib/"
+    exit 1
+fi
+STARTUP_MOD=$(grep -m1 'defmodule' "$STARTUP" | sed 's/.*defmodule \([^ ]*\).*/\1/' | tr '.' '.')
+STARTUP_BEAM="Elixir.${STARTUP_MOD}.beam"
+echo "  Startup module: ${STARTUP_MOD}"
+
+# --- Step 5: Package into .avm ---
 echo "Packaging .avm archive..."
 python3 "${SCRIPT_DIR}/pack_avm.py" "${OUTPUT}" \
-    "Elixir.ElixirWorkers.beam" "${BUILD_DIR}"
+    "${STARTUP_BEAM}" "${BUILD_DIR}"
 
 cp "${OUTPUT}" "${WORKER_OUTPUT}"
 echo ""
