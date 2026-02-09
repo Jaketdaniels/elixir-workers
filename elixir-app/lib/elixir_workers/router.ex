@@ -79,7 +79,7 @@ defmodule ElixirWorkers.Router do
 
   defp filter_sensitive_headers(hdrs) when is_map(hdrs) do
     :maps.filter(fn key, _val ->
-      MapSet.member?(@sensitive_headers_set, String.downcase(to_string(key))) == false
+      not MapSet.member?(@sensitive_headers_set, String.downcase(to_string(key)))
     end, hdrs)
   end
 
