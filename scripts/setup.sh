@@ -14,6 +14,17 @@ step() { echo ""; echo "→ $*"; }
 ok()   { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*" >&2; }
 
+confirm() {
+    local msg="$1"
+    echo ""
+    printf "  %s [Y/n] " "$msg"
+    read -r answer
+    case "$answer" in
+        [nN]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 elapsed() {
     local start=$1
     local end
@@ -64,14 +75,18 @@ step "Checking system dependencies"
 
 if [ "$OS" = "Darwin" ]; then
     if ! command -v brew >/dev/null 2>&1; then
-        step "Installing Homebrew"
-        log "This may ask for your password."
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"
-        if ! command -v brew >/dev/null 2>&1; then
-            fail "Homebrew install failed"; exit 1
+        if confirm "Homebrew is required but not installed. Install it?"; then
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)"
+            if ! command -v brew >/dev/null 2>&1; then
+                fail "Homebrew install failed"; exit 1
+            fi
+            ok "Homebrew"
+        else
+            fail "Homebrew is required to install dependencies on macOS"
+            log "Install it from https://brew.sh and re-run make setup."
+            exit 1
         fi
-        ok "Homebrew"
     fi
 
     MISSING=()
@@ -81,10 +96,15 @@ if [ "$OS" = "Darwin" ]; then
     command -v wasm-opt >/dev/null 2>&1 || MISSING+=(binaryen)
 
     if [ ${#MISSING[@]} -gt 0 ]; then
-        step "Installing ${MISSING[*]}"
-        local_start=$(date +%s)
-        retry "brew install" brew install "${MISSING[@]}"
-        ok "${MISSING[*]} ($(elapsed "$local_start"))"
+        if confirm "Install ${MISSING[*]} via Homebrew?"; then
+            local_start=$(date +%s)
+            retry "brew install" brew install "${MISSING[@]}"
+            ok "${MISSING[*]} ($(elapsed "$local_start"))"
+        else
+            fail "Missing dependencies: ${MISSING[*]}"
+            log "Install them manually and re-run make setup."
+            exit 1
+        fi
     else
         ok "cmake, elixir, node, binaryen"
     fi
@@ -98,11 +118,12 @@ elif [ "$OS" = "Linux" ]; then
     command -v wasm-opt >/dev/null 2>&1 || MISSING+=(binaryen)
 
     if [ ${#MISSING[@]} -gt 0 ]; then
-        step "Installing ${MISSING[*]}"
-        local_start=$(date +%s)
-        retry "apt-get update" sudo apt-get update -qq
-        retry "apt-get install" sudo apt-get install -y -qq "${MISSING[@]}"
-        ok "${MISSING[*]} ($(elapsed "$local_start"))"
+        fail "Missing packages: ${MISSING[*]}"
+        log "Run this, then re-run make setup:"
+        echo ""
+        echo "    sudo apt-get update && sudo apt-get install -y ${MISSING[*]}"
+        echo ""
+        exit 1
     else
         ok "cmake, elixir, node, binaryen"
     fi
@@ -149,6 +170,12 @@ else
             ;;
     esac
 
+    if ! confirm "Download and install wasi-sdk v${WASI_SDK_VERSION} to ~/.wasi-sdk?"; then
+        fail "wasi-sdk is required to compile to WebAssembly"
+        log "Install manually from: https://github.com/WebAssembly/wasi-sdk/releases"
+        exit 1
+    fi
+
     WASI_URL="https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/${WASI_ARCHIVE}"
     WORK_DIR="$(mktemp -d)"
     WASI_INSTALLING=1
@@ -192,11 +219,21 @@ fi
 
 # --- npm dependencies ---
 
-step "Installing npm dependencies"
-local_start=$(date +%s)
-cd "${PROJECT_DIR}/worker"
-retry "npm install" npm install --silent
-ok "Done ($(elapsed "$local_start"))"
+step "Checking npm dependencies"
+
+if [ -d "${PROJECT_DIR}/worker/node_modules/.package-lock.json" ]; then
+    ok "Already installed"
+else
+    if confirm "Install npm dependencies in worker/?"; then
+        local_start=$(date +%s)
+        cd "${PROJECT_DIR}/worker"
+        retry "npm install" npm install --silent
+        ok "Done ($(elapsed "$local_start"))"
+    else
+        fail "npm dependencies are required to run the dev server"
+        exit 1
+    fi
+fi
 
 # --- Done ---
 
