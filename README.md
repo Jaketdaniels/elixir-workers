@@ -44,8 +44,8 @@ git clone https://github.com/youruser/elixir-workers.git
 cd elixir-workers
 
 make setup    # Clone AtomVM, install npm deps
-make atomvm   # Compile AtomVM to WASM (~1.1MB binary)
-make app      # Compile Elixir → .beam → .avm (~100KB archive)
+make atomvm   # Compile AtomVM to WASM (~559KB optimized binary)
+make app      # Compile Elixir → .beam → .avm (~12KB archive)
 make dev      # Start dev server on localhost:8797
 ```
 
@@ -191,7 +191,7 @@ This runs on AtomVM, not full OTP. Key differences:
 - **No OTP applications** — no supervisors, no GenServers, no application trees
 - **No networking** — no `:gen_tcp`, `:httpc`, etc. (all I/O goes through the stdin/stdout bridge)
 - **No file system** — WASI provides a virtual filesystem with only the `.avm` file
-- **Limited stdlib** — 36 modules bundled; add more from `vendor/AtomVM/libs/` as needed
+- **Minimal stdlib** — only 5 modules bundled (maps + 4 app modules); add more from `vendor/AtomVM/libs/` as needed
 - **No string interpolation** — avoid `"hello #{name}"` syntax as it pulls in the `String.Chars` protocol. Use binary concatenation: `<<"hello ", name::binary>>`
 
 What **does** work:
@@ -199,18 +199,20 @@ What **does** work:
 - Maps, lists, tuples, binaries
 - Recursion, guards, multi-clause functions
 - Modules, structs
-- Basic `Enum`, `Map`, `List`, `String` operations
+- Most `:erlang`, `:lists`, `:binary`, `:maps` functions (built-in NIFs/BIFs)
 - The `ElixirWorkers.JSON` module for encoding/decoding
 
 ## Sizes
 
 | Component | Size |
 |-----------|------|
-| AtomVM WASM binary | ~1.1 MB |
-| Application .avm (36 modules) | ~100 KB |
-| Total Worker bundle | ~1.2 MB |
+| AtomVM WASM binary | ~559 KB |
+| Application .avm (5 modules) | ~12 KB |
+| Total Worker bundle | ~571 KB |
 
-For comparison, the Cloudflare Workers size limit is 10 MB (paid) / 1 MB (free). The free tier is tight but feasible with a minimal stdlib. The paid tier has plenty of room.
+The WASM binary is built with `-Oz` + LTO + `wasm-opt -Oz` for aggressive size optimization. The .avm is aggressively pruned — most `:erlang`, `:lists`, `:binary` functions are NIFs/BIFs built into the WASM and don't need .beam files.
+
+For comparison, the Cloudflare Workers size limit is 10 MB (paid) / 1 MB (free). This fits comfortably in the free tier.
 
 ## License
 

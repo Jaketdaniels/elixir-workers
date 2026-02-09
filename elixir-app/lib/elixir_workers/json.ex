@@ -48,7 +48,7 @@ defmodule ElixirWorkers.JSON do
     # skip colon
     pos = pos + 1
     {value, pos} = decode_value(bin, pos)
-    acc = Map.put(acc, key, value)
+    acc = :maps.put(key, value, acc)
     pos = skip_whitespace(bin, pos)
 
     case :binary.at(bin, pos) do

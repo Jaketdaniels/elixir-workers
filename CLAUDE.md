@@ -35,8 +35,8 @@ make deploy   # Deploy to Cloudflare
 
 | Output | Size | Description |
 |--------|------|-------------|
-| `build/atomvm-wasi/atomvm.wasm` | ~1.1MB | AtomVM VM compiled to WASM |
-| `build/app.avm` | ~100KB | Packaged Elixir app + AtomVM stdlib (36 modules) |
+| `build/atomvm-wasi/atomvm.wasm` | ~559KB | AtomVM VM compiled to WASM (-Oz, LTO, wasm-opt) |
+| `build/app.avm` | ~12KB | Packaged Elixir app + minimal stdlib (5 modules) |
 | `worker/atomvm.wasm` | (copy) | Copied for wrangler |
 | `worker/app.avm` | (copy) | Copied for wrangler |
 
@@ -59,18 +59,22 @@ make deploy   # Deploy to Cloudflare
 | `elixir-app/lib/elixir_workers/json.ex` | Minimal JSON encoder/decoder for AtomVM |
 | `elixir-app/lib/atomvm/wasi.ex` | NIF bridge: `AtomVM.Wasi.read_stdin/0`, `write_stdout/1` |
 | `scripts/build-atomvm.sh` | Compiles AtomVM C code to WASM via wasi-sdk + CMake |
-| `scripts/build-app.sh` | Compiles Elixir/Erlang → .beam → .avm (5-step pipeline) |
+| `scripts/build-app.sh` | Compiles Elixir/Erlang → .beam → .avm (3-step pipeline) |
 | `scripts/pack_avm.py` | AVM archive creator matching AtomVM's packbeam format |
 
 ## Compilation constraints
 
 AtomVM is compiled with these flags for WASI:
+- `-Oz` — aggressive size optimization
+- `-flto` — link-time optimization (dead code elimination across files)
+- `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections` — strip unused functions
 - `AVM_NO_SMP` — single-threaded (CF Workers are single-threaded)
 - `AVM_NO_JIT` — no JIT (WASM can't generate executable code)
 - `ATOMVM_PLATFORM_WASI` — platform identifier
-- `HAVE_OPEN_MEMSTREAM=0`, `AVM_DISABLE_NETWORKING=1`
+- `HAVE_OPEN_MEMSTREAM=0`, `AVM_DISABLE_NETWORKING=1`, `NDEBUG`
 - Excluded C files: otp_socket, otp_net, inet, otp_ssl, otp_crypto, dist_nifs, jit, jit_stream_flash, portnifloader, posix_nifs, ets, ets_hashtable
 - Unresolved env symbols (ETS, dist) are stubbed as no-ops in the JS WASI shim
+- Post-build: `wasm-strip` (llvm-strip) + `wasm-opt -Oz` for further size reduction
 
 ## AVM pack format
 
@@ -106,9 +110,13 @@ The JS deserializer finds the first complete JSON object in stdout using brace-c
 
 ## Bundled stdlib modules
 
-The .avm includes 36 modules: 4 app + 1 exavmlib (Map) + 1 eavmlib (atomvm) + 30 estdlib:
-- **estdlib**: init, kernel, erlang, maps, lists, binary, io, io_lib, proplists, unicode, code, code_server, application, gen, gen_server, gen_event, gen_statem, supervisor, proc_lib, sys, timer, math, string, os, queue, sets, calendar, base64, erts_debug, logger
-- Add more from `vendor/AtomVM/libs/estdlib/src/` or `vendor/AtomVM/libs/exavmlib/lib/` as needed
+The .avm includes only 5 modules (aggressively pruned from 36):
+- **app**: ElixirWorkers (entry), ElixirWorkers.Router, ElixirWorkers.JSON, AtomVM.Wasi
+- **estdlib**: maps (for `maps:to_list/1`, `maps:put/3`, `maps:iterator/1`)
+
+Most `erlang:*`, `lists:*`, `binary:*` functions are NIFs/BIFs built into the WASM binary — they don't need .beam files. The `init` module is intentionally excluded: when absent, AtomVM skips the OTP boot sequence and directly calls `start/0` on the startup module.
+
+Add more from `vendor/AtomVM/libs/estdlib/src/` or `vendor/AtomVM/libs/exavmlib/lib/` as needed. Avoid `Map` (Elixir) — use `:maps.*` directly or pattern matching instead.
 
 ## Development rules
 

@@ -5,6 +5,12 @@ project(atomvm-wasi C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Aggressive size optimization
+set(CMAKE_C_FLAGS_RELEASE "-Oz -flto -ffunction-sections -fdata-sections -DNDEBUG")
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
 # AtomVM source directory (vendored or submodule)
 set(ATOMVM_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../vendor/AtomVM" CACHE PATH "Path to AtomVM source")
 
@@ -91,6 +97,9 @@ add_executable(atomvm
 target_link_options(atomvm PRIVATE
     -Wl,--export=main
     -Wl,--allow-undefined
+    -Wl,--gc-sections
+    -Wl,--strip-debug
+    -flto
 )
 
 # Set output to .wasm

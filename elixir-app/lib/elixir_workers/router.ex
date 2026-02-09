@@ -29,15 +29,15 @@ defmodule ElixirWorkers.Router do
     }
   end
 
-  def handle(%{"method" => "POST", "url" => "/api/echo"} = req) do
+  def handle(%{"method" => "POST", "url" => "/api/echo", "body" => body, "headers" => hdrs} = _req) do
     %{
       "status" => 200,
       "headers" => %{"content-type" => "application/json"},
       "body" =>
         ElixirWorkers.JSON.encode(%{
-          "echo" => Map.get(req, "body", ""),
-          "method" => Map.get(req, "method", ""),
-          "headers" => Map.get(req, "headers", %{})
+          "echo" => body,
+          "method" => "POST",
+          "headers" => hdrs
         })
     }
   end
