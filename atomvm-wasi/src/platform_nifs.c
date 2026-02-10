@@ -61,15 +61,12 @@ static term nif_wasi_read_stdin(Context *ctx, int argc, term argv[])
         }
         if (len == capacity) {
             /* Check for size limit before growing buffer */
-            if (capacity >= MAX_INPUT_SIZE / 2) {
+            if (capacity * 2 > MAX_INPUT_SIZE) {
                 free(buf);
                 RAISE_ERROR(OUT_OF_MEMORY_ATOM);
             }
-            /* Check for potential overflow in multiplication */
+            /* Grow the buffer (will not overflow due to check above) */
             size_t new_capacity = capacity * 2;
-            if (new_capacity < capacity || new_capacity > MAX_INPUT_SIZE) {
-                new_capacity = MAX_INPUT_SIZE;
-            }
             char *newbuf = realloc(buf, new_capacity);
             if (!newbuf) {
                 free(buf);

@@ -20,7 +20,8 @@ We will acknowledge receipt of your vulnerability report within 48 hours and sen
 
 ### Input Validation
 
-- **Request Body Size Limit**: The framework enforces a 1 MB limit on request bodies to prevent memory exhaustion attacks.
+- **Request Body Size Limit**: The JavaScript worker enforces a 1 MB limit on HTTP request bodies to prevent memory exhaustion attacks.
+- **JSON Processing Limit**: The Elixir JSON parser enforces a 10 MB limit on JSON document size for internal processing (which includes request bodies and other data).
 - **JSON Depth Limit**: JSON parsing is limited to 32 levels of nesting to prevent stack overflow attacks.
 - **URL Percent Decoding**: Malformed percent-encoded sequences are handled safely without crashing.
 
