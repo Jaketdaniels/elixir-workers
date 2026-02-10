@@ -9,6 +9,9 @@ defmodule ElixirWorkers.Middleware do
     |> Conn.put_resp_header("x-content-type-options", "nosniff")
     |> Conn.put_resp_header("x-frame-options", "DENY")
     |> Conn.put_resp_header("strict-transport-security", "max-age=31536000; includeSubDomains")
+    |> Conn.put_resp_header("referrer-policy", "strict-origin-when-cross-origin")
+    |> Conn.put_resp_header("permissions-policy", "geolocation=(), microphone=(), camera=()")
+    |> Conn.put_resp_header("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
   end
 
   # Parse request body based on content-type.

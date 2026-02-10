@@ -121,10 +121,16 @@ defmodule ElixirWorkers.URL do
           lo = hex_digit(:binary.at(bin, pos + 2))
 
           if hi >= 0 and lo >= 0 do
+            # Decode the percent-encoded byte
             pct_dec(bin, pos + 3, [hi * 16 + lo | acc])
           else
+            # Malformed percent encoding - keep the % literal for safety
             pct_dec(bin, pos + 1, [?% | acc])
           end
+
+        ?% ->
+          # % at end of string or without enough following characters
+          pct_dec(bin, pos + 1, [?% | acc])
 
         ?+ ->
           pct_dec(bin, pos + 1, [?\s | acc])
