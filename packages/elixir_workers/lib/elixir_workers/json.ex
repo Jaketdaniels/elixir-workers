@@ -3,12 +3,14 @@ defmodule ElixirWorkers.JSON do
   # Supports: strings, integers, floats, booleans, null, objects, arrays.
 
   @max_depth 32
+  # Maximum JSON document size (10 MB) - matches C stdin reader limit
+  @max_json_size 10 * 1024 * 1024
 
   # ---- Decoder ----
 
   def decode(binary) when is_binary(binary) do
     # Protect against excessively large JSON documents
-    if byte_size(binary) > 10 * 1024 * 1024 do
+    if byte_size(binary) > @max_json_size do
       :erlang.error(:json_too_large)
     end
     {value, _rest} = decode_value(binary, 0, 0)
