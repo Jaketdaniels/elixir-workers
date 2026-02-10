@@ -44,7 +44,8 @@ static term nif_wasi_read_stdin(Context *ctx, int argc, term argv[])
     (void) argc;
     (void) argv;
 
-    /* Read stdin in chunks */
+    /* Read stdin in chunks with a maximum size limit to prevent DoS */
+    const size_t MAX_INPUT_SIZE = 10 * 1024 * 1024; /* 10 MB limit */
     size_t capacity = 4096;
     size_t len = 0;
     char *buf = malloc(capacity);
@@ -59,13 +60,23 @@ static term nif_wasi_read_stdin(Context *ctx, int argc, term argv[])
             break;
         }
         if (len == capacity) {
-            capacity *= 2;
-            char *newbuf = realloc(buf, capacity);
+            /* Check for size limit before growing buffer */
+            if (capacity >= MAX_INPUT_SIZE / 2) {
+                free(buf);
+                RAISE_ERROR(OUT_OF_MEMORY_ATOM);
+            }
+            /* Check for potential overflow in multiplication */
+            size_t new_capacity = capacity * 2;
+            if (new_capacity < capacity || new_capacity > MAX_INPUT_SIZE) {
+                new_capacity = MAX_INPUT_SIZE;
+            }
+            char *newbuf = realloc(buf, new_capacity);
             if (!newbuf) {
                 free(buf);
                 RAISE_ERROR(OUT_OF_MEMORY_ATOM);
             }
             buf = newbuf;
+            capacity = new_capacity;
         }
     }
 

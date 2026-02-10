@@ -7,9 +7,15 @@ defmodule ElixirWorkers.JSON do
   # ---- Decoder ----
 
   def decode(binary) when is_binary(binary) do
+    # Protect against excessively large JSON documents
+    if byte_size(binary) > 10 * 1024 * 1024 do
+      :erlang.error(:json_too_large)
+    end
     {value, _rest} = decode_value(binary, 0, 0)
     value
   end
+
+  def decode(_), do: :erlang.error(:badarg)
 
   defp decode_value(_bin, _pos, depth) when depth > @max_depth do
     :erlang.error(:json_max_depth_exceeded)
@@ -17,6 +23,11 @@ defmodule ElixirWorkers.JSON do
 
   defp decode_value(bin, pos, depth) do
     pos = skip_ws(bin, pos)
+
+    # Bounds check to prevent reading past end of binary
+    if pos >= byte_size(bin) do
+      :erlang.error(:unexpected_end_of_json)
+    end
 
     case :binary.at(bin, pos) do
       ?{ -> decode_object(bin, pos + 1, depth + 1)
@@ -26,6 +37,7 @@ defmodule ElixirWorkers.JSON do
       ?f -> {false, pos + 5}
       ?n -> {nil, pos + 4}
       c when c in [?-, ?0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9] -> decode_number(bin, pos)
+      _ -> :erlang.error(:invalid_json)
     end
   end
 
