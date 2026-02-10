@@ -7,3 +7,4 @@ packages/elixir_workers/priv/atomvm.wasm
 packages/elixir_workers/priv/stdlib/
 .DS_Store
 .env
+_codeql_detected_source_root
