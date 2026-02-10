@@ -138,10 +138,16 @@ Customize the Content-Security-Policy for your application's needs:
 ```elixir
 def security_headers(conn) do
   conn
+  # CSP: Strict policy - no inline scripts or styles
   |> Conn.put_resp_header("content-security-policy", 
-       "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.example.com")
+       "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+  # For applications requiring external CDN resources, specify exact origins:
+  # |> Conn.put_resp_header("content-security-policy",
+  #      "default-src 'self'; script-src 'self' https://cdn.example.com; style-src 'self' https://cdn.example.com")
 end
 ```
+
+**Security Warning**: Avoid using `'unsafe-inline'` in CSP directives as it significantly weakens XSS protection. If you must use inline scripts or styles, consider using CSP nonces or hashes instead.
 
 ### 6. Restrict CORS Origins
 
